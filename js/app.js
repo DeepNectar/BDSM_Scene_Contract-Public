@@ -59,6 +59,36 @@
                                               (reloading restores the original page). */
   const dayNumber = id => { const m = /^day(\d+)$/.exec(id); return m ? +m[1] : null; };
 
+  /* ---------- text-area auto-grow — declared FIRST (v3.7 DH) ----------
+     applyFieldData()/loadSaved() call autoGrowAll() during boot, but these
+     helpers used to live hundreds of lines below as `const`s → TDZ crash
+     "Cannot access 'autoGrowAll' before initialization". Hoisted here so no
+     call site can ever run before initialisation. */
+  const autoGrow = ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+  const autoGrowAll = () => $$('textarea').forEach(autoGrow);
+  let growQueued = false;
+  const scheduleAutoGrowAll = () => {
+    if (growQueued) return;
+    growQueued = true;
+    requestAnimationFrame(() => { growQueued = false; autoGrowAll(); });
+  };
+  window.scheduleAutoGrowAll = scheduleAutoGrowAll;   // used by js/device.js after a profile change
+  const wireTextareas = root => $$('textarea', root).forEach(ta => ta.addEventListener('input', () => autoGrow(ta)));
+
+  /* ---------- inline text inputs: grow to fit their text, stay compact ---------- */
+  const GROW_FONT = '15px "Cormorant Garamond", Georgia, serif';
+  const measureCanvas = document.createElement('canvas');
+  const mctx = measureCanvas.getContext('2d');
+  const growInput = inp => {
+    if (!inp || inp.dataset.pill === '1') return;             // DD/MM/YYYY pills keep fixed size
+    const min = parseFloat(getComputedStyle(inp).minWidth) || 70;
+    const max = parseFloat(inp.dataset.growMax || '340');
+    mctx.font = getComputedStyle(inp).font || GROW_FONT;
+    const w = Math.ceil(mctx.measureText(inp.value || inp.placeholder || '').width) + 26;
+    inp.style.width = Math.min(Math.max(w, min), max) + 'px';
+  };
+  const growInputsIn = root => $$('input[type="text"]', root).forEach(growInput);
+
   /* ---------- device helpers with safe fallbacks ----------
      js/device.js defines window.isPhone / downloadBlob / DHDevice, but it is not
      loaded by index.html (and test harnesses skip it). These shims keep every
@@ -1553,11 +1583,14 @@
     return true;
   };
 
-  aiApplyBtn.addEventListener('click', () => {
+  function aiApplyClick() {
     if (!aiDraft) return;
+    console.log('DH-DEBUG: create branch, addDayPage=', typeof addDayPage, 'typeof window.addDayPage=', typeof window.addDayPage);
     if (aiMode === 'create') {
       const created = `✨ Day ${aiDraft.n} created by the AI — review it together before signing ♥`;
+      console.log('DH-DEBUG: calling addDayPage, n=', aiDraft.n, 'blank=', aiDraft.blank);
       const section = addDayPage(aiDraft);
+      console.log('DH-DEBUG: addDayPage returned', section && section.id, 'inDOM=', !!(section && window.document.contains(section)));
       persistDays();
       aiDraft = null;
       aiApplyBtn.disabled = true;
@@ -1576,33 +1609,22 @@
         save();
       }
     }
+  }
+
+  /* v3.7 DH: a throw here used to kill day creation silently — the global
+     error toast fired but nothing was logged, so wrap + console.error it. */
+  console.log('DH-DEBUG: binding aiApplyBtn listener');
+  aiApplyBtn.addEventListener('click', () => {
+    console.log('DH-DEBUG: apply clicked, draft=', !!aiDraft, 'mode=', aiMode);
+    try { aiApplyClick(); }
+    catch (err) { console.error('AI apply failed:', err); toast('⚠️ AI apply failed: ' + err.message, 4000); }
   });
 
-  /* ---------- textareas: grow with content (batched → cheap on phones) ---------- */
-  const autoGrow = ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
-  const autoGrowAll = () => $$('textarea').forEach(autoGrow);
-  let growQueued = false;
-  const scheduleAutoGrowAll = () => {
-    if (growQueued) return;
-    growQueued = true;
-    requestAnimationFrame(() => { growQueued = false; autoGrowAll(); });
-  };
-  window.scheduleAutoGrowAll = scheduleAutoGrowAll;   // used by js/device.js after a profile change
-  const wireTextareas = root => $$('textarea', root).forEach(ta => ta.addEventListener('input', () => autoGrow(ta)));
-
-  /* ---------- inline text inputs: grow to fit their text, stay compact ---------- */
-  const GROW_FONT = '15px "Cormorant Garamond", Georgia, serif';
-  const measureCanvas = document.createElement('canvas');
-  const mctx = measureCanvas.getContext('2d');
-  const growInput = inp => {
-    if (inp.dataset.pill === '1') return;                 // DD/MM/YYYY pills keep fixed size
-    const min = parseFloat(getComputedStyle(inp).minWidth) || 70;
-    const max = parseFloat(inp.dataset.growMax || '340');
-    mctx.font = getComputedStyle(inp).font || GROW_FONT;
-    const w = Math.ceil(mctx.measureText(inp.value || inp.placeholder || '').width) + 26;
-    inp.style.width = Math.min(Math.max(w, min), max) + 'px';
-  };
-  const growInputsIn = root => $$('input[type="text"]', root).forEach(growInput);
+  /* ---------- textareas / inline inputs ----------
+     v3.7 DH: autoGrow / autoGrowAll / scheduleAutoGrowAll / wireTextareas /
+     growInput / growInputsIn are declared at the TOP of this IIFE (see the
+     hoisted-helpers block near line ~62) so boot-time callers like
+     applyFieldData() never hit a TDZ ReferenceError. Only the listener stays here. */
   document.addEventListener('input', e => {
     const inp = e.target;
     if (inp.matches && inp.matches('#main-contract input[type="text"]:not([maxlength])')) growInput(inp);
