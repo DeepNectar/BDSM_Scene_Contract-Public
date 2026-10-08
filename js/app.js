@@ -135,8 +135,9 @@
     }
   };
 
-  const APP_VERSION = 'v3.8 DH';
+  const APP_VERSION = 'v3.9 DH';
   const WHATS_NEW = [
+    '💾 v3.9: The Save button is fully alive again — one tap now pushes EVERYTHING to the cloud at once (all Day-section entries, the complete Pre-Scene Execution Affidavit, both signatures and every created day page), shows ⏳ Saving… and only says \"Saved ✓\" after the data has genuinely landed in Supabase. Failed writes retry automatically; if the cloud is unreachable you get an honest warning instead of a silent dead click.',
     '🔁 v3.8: Everything you create during the day is now saved to the cloud — every blank/AI day page, every field, every signature. Real-time sync between devices (the other phone updates within ~1 second), a "synced Xs ago" status pill, and an auto-flush when you close the tab so the newest edits always reach Supabase.',
     '🩹 v3.4: Fixed the startup crash (“Cannot access ‘ensureSignAccepts’ before initialization”) — the site now opens clean on every device, signatures restore instantly, and Save / Print-PDF / delete-day / collapse toggles all work again. Cloud sync (Supabase) is now the single source of truth on every reload.',
     '🆕 v3.3: ALL existing days wiped clean as you asked — the contract starts empty. Add days back anytime with “➕ Add blank day”, or let “✨ AI write a day” draft one for you. Every single day page carries a red “✖ Delete day” button that permanently removes it from the contract AND the cloud.',
@@ -242,14 +243,18 @@
     return data;
   };
 
-  /* ---------- cloud save (Supabase only — never local storage) ---------- */
+  /* ---------- cloud save (Supabase is the source of truth; localStorage is
+     only a per-device safety net for offline sessions) ---------- */
   let saveTimer;
-  const writeStore = () => {                       // debounced autosave → cloud
+  const writeStore = (immediate) => {              // debounced autosave → cloud
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      window.CloudStore.saveFields(collectState())
-        .then(ok => { if (!ok && !window.CloudStore.ready) softWarn(); });
-    }, 1200);
+    const push = () => {
+      const p = window.CloudStore.saveFields(collectState());
+      if (p && typeof p.catch === 'function') p.catch(() => {});   // v3.9: never an unhandled rejection
+      return p;
+    };
+    if (immediate) { push(); return; }             // 💾 Save / unload → no debounce
+    saveTimer = setTimeout(push, 1200);
   };
   const softWarn = () => {
     const t = $('#cloud-status');
@@ -257,17 +262,58 @@
   };
 
   /* ---------- save: cloud first (source of truth), local copy as a
-     per-device safety net so nothing is ever lost offline ---------- */
-  const save = (quiet) => {
-    let ok = true;
+     per-device safety net so nothing is ever lost offline.
+     v3.9 DH — THE SAVE BUTTON FIX: the button now pushes EVERYTHING at once
+     (all field values — Day sections AND Pre-Scene Execution Affidavit, all
+     signature accepts, every created day page) and AWAITS the real cloud
+     completion before reporting "Saved ✓". Previously it only queued a
+     debounced autosave and toasted immediately, so when the underlying
+     promise rejected (no .catch anywhere) the click appeared to do nothing
+     and the newest data never reached Supabase. */
+  const collectAccepts = () => {
+    try { return readAccepts(); } catch { return null; }   // defined below; safe at click time
+  };
+  const collectDays = () => {
+    try {
+      return $$('.page')
+        .filter(p => dayNumber(p.id) && !STATIC_IDS.has(p.id))
+        .map(p => ({ id: p.id, html: p.outerHTML }));
+    } catch { return null; }
+  };
+
+  const save = async (quiet, btn) => {
+    /* 1 · instant local snapshot (offline safety net) */
+    let localOk = true;
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(collectState()));
-    } catch { ok = false; }
-    writeStore();                                  // push the newest entries to Supabase too
-    if (!quiet) {
-      if (ok) toast('💾 Saved — in the cloud and safe on this device.');
-      else toast('⚠️ Browser storage is full — saved to the cloud only. Export by email to free space.', 3600);
+      localStorage.setItem(DAYS_KEY, JSON.stringify({ list: collectDays() || [] }));
+    } catch { localOk = false; }
+
+    /* 2 · push EVERYTHING to Supabase right now (no debounce) */
+    writeStore(true);                                   // fields incl. affidavit
+    const acc = collectAccepts();
+    if (acc && window.CloudStore) {
+      const p = window.CloudStore.saveAccepts(acc);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
     }
+    if (typeof persistDays === 'function') persistDays();  // all created day pages
+
+    /* 3 · wait for the writes to actually land, then tell the truth */
+    if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Saving…'; }
+    let res = { ok: true, pending: 0 };
+    try {
+      if (window.CloudStore && typeof window.CloudStore.awaitFlush === 'function') {
+        res = await window.CloudStore.awaitFlush(15000);
+      }
+    } catch { res = { ok: false, pending: 1 }; }
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || '💾 Save'; }
+
+    if (!quiet) {
+      if (res.ok) toast('💾 Saved ✓ — everything (Day section + Pre-Scene Affidavit + signatures + all days) is in the cloud.');
+      else if (localOk) toast('⚠️ Cloud unreachable right now — saved on this device; will retry automatically.', 4200);
+      else toast('⚠️ Browser storage full — kept in this session only. Export by email to free space.', 4200);
+    }
+    return res.ok;
   };
 
   /* ---------- visibility helpers (used by autosave AND the app lifecycle) ---------- */
@@ -349,7 +395,9 @@
     syncAllLocks();
   };
 
-  $('#save-contract').addEventListener('click', save);
+  /* v3.9 DH — pass the button element so it shows ⏳ Saving… → 💾 Save while
+     the cloud writes complete (the click handler is async now). */
+  $('#save-contract').addEventListener('click', e => save(false, e.currentTarget));
 
   /* ---------- Print / PDF ----------
      On phones window.print() is unreliable (no print service, or it silently
