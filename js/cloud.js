@@ -1,23 +1,26 @@
 /* ============================================================
-   Cloud store — v3.8 DH
+   Cloud store — v3.9 DH
    ALL state lives in Supabase (table `contract_state`).
-   NOTHING is persisted to localStorage / sessionStorage / IndexedDB.
-   In-memory cache only for the current session.
    Keys stored in the cloud:
-     fields        → every input/textarea/select value (incl. login pw field)
+     fields        → EVERY input/textarea/select value across the whole
+                     contract — Pre-Scene Execution Affidavit included
      accepts       → per-area signature acceptances {area:{party:{ts}}}
      days          → EVERY created day page (blank or AI) [{id, html}]
      wiped         → sticky "all days cleared" flag
-   v3.8 additions (everything of the day is now saved & synced):
-     • flush()      — synchronous best-effort push of the whole mirror,
-                      fired on pagehide/beforeunload so the LAST edits and
-                      the most recent day of the day always reach Supabase
-                      even when the tab closes before the debounce fires.
-     • subscribe()  — Postgres change feed on contract_state: when the other
-                      device saves, this device re-pulls within ~a second
-                      (real-time sync without refreshing).
-     • heartbeat    — periodic retry while offline; status pill shows
-                      "Last synced …" once connected.
+   v3.9 fixes ("💾 Save button does nothing / data not reaching cloud"):
+     • saveFields/saveAccepts/saveDays/saveWiped are now SYNCHRONOUS and
+       return a Promise<boolean>. Previously they returned the raw PostgREST
+       promise, which REJECTS on any network hiccup — app.js only attached
+       `.then(ok => …)` with no `.catch`, so an unhandled rejection killed
+       the save silently and the button looked dead. Now: never rejects,
+       retries once, reports success/failure honestly.
+     • pending-writes counter + awaitFlush(): the 💾 Save button awaits the
+       REAL completion of every queued cloud write (fields + signatures +
+       all day pages) before showing "Saved ✓", instead of firing off a
+       debounced autosave and hoping it lands.
+     • flush() pushes the whole mirror through the same tracked path.
+   v3.8 features kept: realtime change feed, focus refresh, heartbeat retry,
+   "Connected · synced Xs ago" status pill.
    ============================================================ */
 (() => {
   'use strict';
@@ -27,6 +30,10 @@
   let cloudReady = false;
   let warned = false;
   let lastSyncAt = 0;
+
+  /* v3.9 — track in-flight writes so callers can await them */
+  let pendingWrites = 0;
+  const inflight = new Set();
 
   try {
     if (window.supabase && window.supabase.createClient && cfg.url && cfg.anonKey
@@ -68,13 +75,36 @@
      device must start with an empty contract (no old day pages re-appearing). */
   const mem = { fields: {}, accepts: {}, days: [], wiped: false };
 
-  const upsert = async (k, v) => {
-    if (!sb) return false;
-    const { error } = await sb.from('contract_state').upsert({ k, v });
-    if (error) { console.warn('[cloud] upsert failed', k, error); warn(); return false; }
-    warned = false;
-    markSynced();
-    return true;
+  /* v3.9 — ONE bullet-proof write path:
+     • never rejects (network exceptions are caught → resolved false)
+     • retries once automatically
+     • tracked via pendingWrites/inflight so 💾 Save can await real completion */
+  const runWrite = async (label, fn) => {
+    pendingWrites++;
+    const p = (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const { error } = await fn();
+          if (!error) { warned = false; markSynced(); return true; }
+          console.warn(`[cloud] ${label} failed (attempt ${attempt + 1}):`, error);
+        } catch (e) {
+          console.warn(`[cloud] ${label} threw (attempt ${attempt + 1}):`, e);
+        }
+        if (attempt === 0) await new Promise(r => setTimeout(r, 600));  // brief backoff, then retry
+      }
+      warn();
+      return false;
+    })().finally(() => {
+      pendingWrites--;
+      inflight.delete(p);
+    });
+    inflight.add(p);
+    return p;
+  };
+
+  const upsert = (k, v) => {
+    if (!sb) return Promise.resolve(false);
+    return runWrite('upsert ' + k, () => sb.from('contract_state').upsert({ k, v }));
   };
 
   /* ---------- v3.8 DH — ALL day pages are saved to the cloud ----------
@@ -198,20 +228,37 @@
     flush() {
       if (!sb) return false;
       try {
-        sb.from('contract_state').upsert({ k: 'fields',  v: mem.fields });
-        sb.from('contract_state').upsert({ k: 'accepts', v: mem.accepts });
-        sb.from('contract_state').upsert({ k: 'days',    v: mem.days });
-        sb.from('contract_state').upsert({ k: 'wiped',   v: { flag: mem.wiped } });
+        upsert('fields',  mem.fields);
+        upsert('accepts', mem.accepts);
+        upsert('days',    mem.days);
+        upsert('wiped',   { flag: mem.wiped });
         return true;
       } catch (e) { console.warn('[cloud] flush failed', e); return false; }
     },
 
-    saveFields(fields) { mem.fields = fields; return sb ? upsert('fields', fields) : Promise.resolve(false); },
-    saveAccepts(a)     { mem.accepts = a;    return sb ? upsert('accepts', a)    : Promise.resolve(false); },
-    saveDays(list)     { mem.days = list;    return sb ? upsert('days', list)    : Promise.resolve(false); },
+    /* v3.9 — await EVERY queued/running cloud write (incl. the debounced
+       autosave). The 💾 Save button uses this so "Saved ✓" only appears
+       after the data has genuinely landed in Supabase. */
+    async awaitFlush(timeoutMs = 15000) {
+      const deadline = Date.now() + timeoutMs;
+      let ok = true;
+      while (pendingWrites > 0 && Date.now() < deadline) {
+        const batch = Array.from(inflight);
+        const results = await Promise.all(batch.map(p => p.catch(() => false)));
+        ok = results.every(Boolean) && ok;
+        if (batch.length === inflight.size && pendingWrites > 0) {
+          await new Promise(r => setTimeout(r, 250));   // avoid spin if a new write joined mid-batch
+        }
+      }
+      return { ok: ok && pendingWrites === 0, pending: pendingWrites };
+    },
+
+    saveFields(fields) { mem.fields = fields;  return upsert('fields',  fields); },
+    saveAccepts(a)     { mem.accepts = a;      return upsert('accepts', a); },
+    saveDays(list)     { mem.days = list;      return upsert('days',    list); },
     /* v3.3 DH — persist the "all days cleared" flag so the empty contract
        survives reloads on every device */
-    saveWiped(flag)    { mem.wiped = !!flag; return sb ? upsert('wiped', { flag: !!flag }) : Promise.resolve(false); },
+    saveWiped(flag)    { mem.wiped = !!flag;   return upsert('wiped',   { flag: !!flag }); },
 
     /* synchronous accessors used by the UI between saves */
     fields()  { return mem.fields; },
