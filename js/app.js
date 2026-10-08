@@ -135,8 +135,9 @@
     }
   };
 
-  const APP_VERSION = 'v3.4 DH';
+  const APP_VERSION = 'v3.8 DH';
   const WHATS_NEW = [
+    '🔁 v3.8: Everything you create during the day is now saved to the cloud — every blank/AI day page, every field, every signature. Real-time sync between devices (the other phone updates within ~1 second), a "synced Xs ago" status pill, and an auto-flush when you close the tab so the newest edits always reach Supabase.',
     '🩹 v3.4: Fixed the startup crash (“Cannot access ‘ensureSignAccepts’ before initialization”) — the site now opens clean on every device, signatures restore instantly, and Save / Print-PDF / delete-day / collapse toggles all work again. Cloud sync (Supabase) is now the single source of truth on every reload.',
     '🆕 v3.3: ALL existing days wiped clean as you asked — the contract starts empty. Add days back anytime with “➕ Add blank day”, or let “✨ AI write a day” draft one for you. Every single day page carries a red “✖ Delete day” button that permanently removes it from the contract AND the cloud.',
     '💘 The AI writer now truly drafts the WHOLE day from your selections: pick COUPLE TYPE (romantic lovers / spicy & naughty / vanilla-sweet / brat tamer / service-devotion / new D/s / long-distance / experienced kinksters), MOOD, INTENSITY, LEAD, VENUE and any BDSM category+subcategory chips — every chip changes the preamble tone, the play bill, protocols, hard limits, aftercare and the romantic narrative woven through the day.',
