@@ -321,6 +321,16 @@
         if (dayNumber(p.id) && !STATIC_IDS.has(p.id) && !keep.has(p.id)) p.remove();
       });
     }
+    /* v3.8 DH — a day that exists in the DOM but not yet in the cloud list was
+       created on THIS device moments ago (e.g. autosave raced a realtime pull).
+       Re-persist immediately so it is never lost — "everything created in the
+       day stays saved". */
+    const wipedNow = (window.CloudStore && typeof window.CloudStore.wiped === 'function') ? window.CloudStore.wiped() : false;
+    if (!wipedNow) {
+      const domCreated = $$('.page').filter(p => dayNumber(p.id) && !STATIC_IDS.has(p.id)).length;
+      const cloudCreated = (list || []).length;
+      if (domCreated > cloudCreated && typeof persistDays === 'function') persistDays();
+    }
     if (!list || !list.length) return;
     const summary = $('#summary');
     if (!summary) return;
@@ -1568,12 +1578,18 @@
   /* ---------- append a freshly created day ---------- */
   // NOTE: STATIC_IDS is already declared at the top of this IIFE (line ~57); redeclaring caused a SyntaxError.
   const persistDays = () => {
+    /* v3.8 DH — EVERY day that exists in the contract right now (blank or AI,
+       except the static founding page shipped in index.html) is pushed to the
+       cloud as [{id, html}]. Called on create / delete / wipe / AI-write so the
+       complete set of days created during the day is always in Supabase. */
+    if (!window.CloudStore) return;
     const list = $$('.page')
       .filter(p => dayNumber(p.id) && !STATIC_IDS.has(p.id))
       .map(p => ({ id: p.id, html: p.outerHTML }));
     window.CloudStore.saveDays(list)
       .then(ok => { if (!ok && !window.CloudStore.ready) toast('⚠️ Cloud not configured — this day lives in the page only.', 3200); });
   };
+  window.dhPersistDays = persistDays;   // used by js/cloud.js flush path & console recovery
   /* NOTE: addDayPage() and ensureSignAccepts() were MOVED UP with bootContract()
      (see the hoisted-helpers block near the signature code) so they are fully
      initialised before applySignatures()/boot run — this fixes the TDZ crash
