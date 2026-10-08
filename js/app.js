@@ -181,10 +181,17 @@
 
   const unlock = () => {
     overlay.classList.add('hidden');
-    /* cloud state was already pulled at DOMContentLoaded — replay it after the gate opens */
-    if (!window.CloudStore.wiped()) restoreDays(window.CloudStore.days());   // re-attach AI-created day pages first…
-    loadSaved(window.CloudStore.fields());
-    applySignatures();   // re-restore accepted signatures after the gate opens
+    /* v3.6 DH — pull the FRESHEST cloud state at the gate, then replay it.
+       (Before this fix nothing ever called CloudStore.load(), so the mirror
+       stayed empty → "not connecting / not syncing".) */
+    const replay = () => {
+      if (!window.CloudStore.wiped()) restoreDays(window.CloudStore.days());   // re-attach AI-created day pages first…
+      loadSaved(window.CloudStore.fields());
+      applySignatures();   // re-restore accepted signatures after the gate opens
+    };
+    Promise.resolve(window.CloudStore.refresh ? window.CloudStore.refresh() : null)
+      .then(replay)
+      .catch(replay);
     setTimeout(() => pwInput.blur(), 300);
   };
 
@@ -665,7 +672,31 @@
      sealed slots/dates take ownership instead of being overwritten by old data.
      (app.js is loaded with `defer`, so this also runs after js/device.js and
      js/pdf.js have defined their globals.) */
-  const bootContract = () => { restoreDays(); loadSaved(); applySignatures(); };
+  const bootContract = async () => {
+    /* v3.6 DH — wait for the first Supabase pull before replaying state,
+       otherwise the contract boots from an empty mirror and never syncs. */
+    try { await window.CloudStore.ready; } catch { /* offline → boot local-only */ }
+    restoreDays(); loadSaved(); applySignatures();
+  };
+
+  /* v3.6 DH — keep multi-device sync fresh: whenever the tab regains focus /
+     becomes visible, pull the latest cloud state and re-apply it. */
+  let lastFocusSync = 0;
+  const resyncFromCloud = () => {
+    if (!window.CloudStore || typeof window.CloudStore.refresh !== 'function') return;
+    const now = Date.now();
+    if (now - lastFocusSync < 1500) return;           // debounce rapid focus/visibility events
+    lastFocusSync = now;
+    Promise.resolve(window.CloudStore.refresh()).then(st => {
+      if (!st) return;                                 // offline / not configured → keep current UI
+      if (!overlay.classList.contains('hidden')) return; // locked → unlock() will replay on login
+      if (!window.CloudStore.wiped()) restoreDays(window.CloudStore.days());
+      loadSaved(window.CloudStore.fields());
+      applySignatures();
+    }).catch(() => {});
+  };
+  window.addEventListener('focus', resyncFromCloud);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) resyncFromCloud(); });
 
   /* ---------- v3.4 DH: hoisted helpers (declared here, used above) ----------
      These two were previously declared further down the file as `const`s while
