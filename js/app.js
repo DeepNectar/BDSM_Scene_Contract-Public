@@ -94,7 +94,10 @@
     return dayLocked(page);                          // finished days collapse by default
   };
   const applyCollapse = page => {
-    page.classList.toggle('collapsed', isCollapsed(page));
+    /* v3.6 DH FIX: the stylesheet hides collapsed content via .page.day-collapsed
+       (see css/styles.css line ~250) — the old code toggled a bare ".collapsed"
+       class that has no rules, so ▾ Collapse / ▸ Expand did nothing visible. */
+    page.classList.toggle('day-collapsed', isCollapsed(page));
     const btn = $('.collapse-toggle', page);
     if (btn) {
       btn.textContent = isCollapsed(page) ? '▸ Expand' : '▾ Collapse';
