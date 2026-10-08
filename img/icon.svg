@@ -1,0 +1,20 @@
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a1418"/>
+      <stop offset="0.55" stop-color="#4a2019"/>
+      <stop offset="1" stop-color="#7c2d3a"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e6c79c"/>
+      <stop offset="1" stop-color="#b19787"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="20" y="20" width="472" height="472" rx="96" fill="none" stroke="url(#gold)" stroke-width="6" opacity="0.75"/>
+  <path d="M256 372 C176 316 138 268 158 232 C175 202 218 210 256 258 C294 210 337 202 354 232 C374 268 336 316 256 372Z"
+        fill="#a3705c" stroke="#f6ece2" stroke-width="10" stroke-linejoin="round"/>
+  <text x="256" y="176" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="86" fill="#f6ece2" letter-spacing="4">D ♥ H</text>
+  <text x="256" y="440" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="46" fill="#e6c79c" letter-spacing="6">CONTRACT</text>
+</svg>

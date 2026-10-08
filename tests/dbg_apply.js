@@ -1,0 +1,24 @@
+const fs = require('fs');
+const { JSDOM } = require('jsdom');
+const html = fs.readFileSync('index.html', 'utf8');
+const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true });
+const { window } = dom;
+window.confirm = () => true; window.alert = () => {};
+window.matchMedia = () => ({ matches:false, addListener(){}, removeListener(){} });
+const errs=[];
+const origErr = console.error;
+process.on('uncaughtException', e => { console.log('UNCAUGHT:', e.stack.split('\n').slice(0,6).join('\n')); });
+window.addEventListener('error', e => errs.push(String(e.message)));
+const src = fs.readFileSync('js/app.js', 'utf8');
+let F={},D=[],A={};
+window.CloudStore = { ready:true, fields:()=>F, saveFields(f){F=f;return Promise.resolve(true);}, days:()=>D, saveDays(l){D=l;return Promise.resolve(true);}, accepts:()=>A, saveAccepts(a){A=a;return Promise.resolve(true);}, wiped:()=>false };
+window.eval(src);
+const $ = s => window.document.querySelector(s);
+$('#ai-assistant').click();
+$('#ai-generate-btn').click();
+console.log('apply disabled?', $('#ai-apply-btn').disabled);
+console.log('preview len', ($('#ai-preview').textContent||'').length);
+try { $('#ai-apply-btn').click(); } catch(e){ console.log('CLICK THREW:', e.stack.split('\n').slice(0,5).join('\n')); }
+console.log('day2 exists?', !!$('#day2'));
+console.log('errs', errs);
+process.exit(0);

@@ -1,0 +1,71 @@
+{
+  "name": "Deep & Honey · Eternal Contract",
+  "short_name": "D&H Contract",
+  "description": "Our private contract — readable, editable and printable on every device, online or offline.",
+  "id": "/deep-honey-contract/",
+  "start_url": "./index.html?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#180d0c",
+  "theme_color": "#2a1c16",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["lifestyle", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "img/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "img/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "img/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "img/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "img/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Save PDF",
+      "short_name": "Save PDF",
+      "description": "Jump to the actions and export our contract as a PDF",
+      "url": "./index.html?action=pdf",
+      "icons": [{ "src": "img/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "AI write a day",
+      "short_name": "AI day",
+      "description": "Draft a new scene day with the assistant",
+      "url": "./index.html?action=ai",
+      "icons": [{ "src": "img/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Email data",
+      "short_name": "Email",
+      "description": "Export the finished days as text / HTML",
+      "url": "./index.html?action=email",
+      "icons": [{ "src": "img/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

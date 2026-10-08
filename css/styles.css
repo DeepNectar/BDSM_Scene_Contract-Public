@@ -1,0 +1,472 @@
+/* ============================================================
+   Deep & Honey · Eternal Contract
+   Compact romantic-professional stylesheet
+   Palette: espresso ink, warm parchment, rose-gold accents
+   ============================================================ */
+
+:root{
+  --ink:#2a1c16;            /* primary text */
+  --ink-soft:#5b4437;       /* secondary text */
+  --paper:#fbf5ec;          /* parchment */
+  --paper-2:#f3e9dc;
+  --line:#dccdbd;           /* hairlines / borders */
+  --accent:#a3705c;         /* rose-brown */
+  --accent-2:#c8a27c;       /* gold */
+  --wine:#7c2d3a;           /* deep romantic red */
+  --ok:#3f6b4a;
+  --no:#8c3b3b;
+  --radius:18px;
+  --shadow:0 20px 50px -18px rgba(42,28,22,.45);
+  --serif:"Cormorant Garamond",Georgia,"Times New Roman",serif;
+  --sans:"Jost","Segoe UI",system-ui,sans-serif;
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+html{scroll-behavior:smooth}
+body{
+  font-family:var(--sans);
+  font-weight:300;
+  color:var(--ink);
+  line-height:1.55;
+  padding:clamp(14px,3vw,36px) clamp(10px,3vw,28px);
+  min-height:100vh;
+  background:
+    radial-gradient(1100px 500px at 15% -5%,rgba(124,45,58,.22),transparent 60%),
+    radial-gradient(900px 600px at 95% 110%,rgba(200,162,124,.16),transparent 55%),
+    linear-gradient(150deg,#180d0c,#2b1714 45%,#241012);
+  overflow-x:hidden;
+}
+
+/* ---------- floating hearts (GPU-cheap: transform + opacity only) ---------- */
+.particle{
+  position:fixed;bottom:-6vh;z-index:0;pointer-events:none;user-select:none;
+  color:#e8b4a0;will-change:transform,opacity;
+  animation:rise var(--dur,18s) linear var(--delay,0s) infinite;
+}
+@keyframes rise{
+  from{transform:translate3d(0,0,0) rotate(0)}
+  to{transform:translate3d(var(--dx,0),-115vh,0) rotate(360deg);opacity:0}
+}
+@media (prefers-reduced-motion:reduce){.particle{display:none}}
+
+/* ---------- container ---------- */
+.contract-container{
+  position:relative;z-index:1;
+  max-width:1100px;margin:0 auto;
+  background:linear-gradient(170deg,var(--paper),var(--paper-2) 55%,var(--paper));
+  border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow),inset 0 0 90px rgba(163,112,92,.05);
+  padding:clamp(18px,4vw,44px) clamp(16px,4vw,48px) 28px;
+}
+.contract-container::after{ /* gilded top rule */
+  content:"";position:absolute;inset:0 0 auto;height:5px;border-radius:var(--radius) var(--radius) 0 0;
+  background:linear-gradient(90deg,var(--wine),var(--accent-2),var(--wine));
+}
+
+/* ---------- header ---------- */
+.contract-header{
+  text-align:center;padding:22px 0 26px;margin-bottom:26px;
+  border-bottom:3px double var(--line);position:relative;
+}
+/* v2.0 DH — Soulmate code logo made bigger in the header (was 88×88, now 220×220) */
+.header-logo{width:220px;height:220px;object-fit:contain;object-position:center;margin-bottom:12px;background:transparent;border:none;border-radius:0;box-shadow:none}
+/* v2.0 DH — "Soulmate Code" wordmark under the logo, enlarged to match */
+.brand-name{font-family:var(--serif);font-weight:600;font-size:clamp(24px,3.6vw,34px);letter-spacing:.18em;text-transform:uppercase;color:var(--wine);margin:-2px 0 6px}
+@media (max-width:600px){.header-logo{width:150px;height:150px}.brand-name{font-size:clamp(20px,5.5vw,26px)}}
+/* v2.4 DH — app version badge in the header (home screen). Shows the current
+   version always; tapping it pops a toast listing "What's new in this version". */
+.version-badge{
+  display:inline-block;font-family:var(--serif);font-weight:600;font-size:13px;letter-spacing:.14em;
+  color:#fff;background:linear-gradient(120deg,var(--wine),var(--accent));
+  border:none;border-radius:999px;padding:4px 16px;margin:0 0 8px 10px;cursor:pointer;
+  box-shadow:0 2px 8px rgba(42,28,22,.25);transition:transform .15s ease,box-shadow .15s ease;
+  vertical-align:middle;
+}
+.version-badge:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(42,28,22,.3)}
+/* v1.9 DH — cloud status pill (Supabase sync indicator) */
+.cloud-status{display:inline-block;font-size:11.5px;letter-spacing:.05em;color:var(--ink-soft);background:rgba(200,162,124,.14);border:1px solid var(--line);border-radius:999px;padding:3px 12px;margin:0 0 8px}
+.contract-header h1{
+  font-family:var(--serif);font-weight:600;font-size:clamp(26px,4.6vw,42px);
+  letter-spacing:.06em;color:var(--ink);
+}
+.tagline{font-style:italic;font-family:var(--serif);font-size:clamp(14px,2vw,18px);color:var(--accent);margin-top:4px}
+.sub{display:flex;flex-wrap:wrap;gap:10px 26px;justify-content:center;margin-top:16px;font-size:14px;color:var(--ink-soft)}
+.sub strong{font-weight:500;color:var(--ink)}
+
+/* ---------- pages / sections ---------- */
+.page{
+  background:rgba(255,252,247,.6);border:1px solid var(--line);border-radius:14px;
+  padding:clamp(16px,3vw,32px);margin-bottom:26px;
+}
+.page-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.page h2{font-family:var(--serif);font-weight:500;font-size:clamp(19px,3vw,26px);letter-spacing:.03em}
+.day-badge{
+  font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:#fff;
+  background:linear-gradient(120deg,var(--wine),var(--accent));
+  padding:4px 16px;border-radius:999px;white-space:nowrap;
+}
+.section-title{
+  font-family:var(--serif);font-weight:600;font-size:clamp(16px,2.4vw,20px);
+  letter-spacing:.08em;text-transform:uppercase;color:var(--accent);
+  margin:26px 0 10px;display:flex;align-items:center;gap:12px;
+}
+.section-title::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--accent-2),transparent)}
+.page h4{
+  font-family:var(--serif);font-size:16px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-soft);margin:20px 0 8px;
+}
+.page p{margin:6px 0;font-size:14.5px}
+.quote{
+  border-left:3px solid var(--accent-2);padding:6px 14px;margin:8px 0;
+  background:rgba(200,162,124,.08);border-radius:0 10px 10px 0;font-family:var(--serif);font-size:16.5px;
+}
+.bullets{margin:6px 0 6px 22px;font-size:14.5px}
+.bullets li{margin:4px 0}
+
+/* ---------- tables ---------- */
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px;background:#fffdf9;border-radius:10px;overflow:hidden}
+th,td{padding:8px 12px;border:1px solid var(--line);vertical-align:top}
+th{
+  background:linear-gradient(120deg,#efe3d4,#e7d6c3);color:var(--ink);
+  font-weight:500;letter-spacing:.05em;text-transform:uppercase;font-size:12.5px;text-align:left;
+}
+tbody tr:nth-child(even),tr:nth-child(even){background:rgba(220,205,189,.16)}
+.verify-table td,.toy-table td{white-space:normal}
+td label.yn{display:inline-flex;align-items:center;gap:5px;margin-right:12px;cursor:pointer;white-space:nowrap}
+
+/* ---------- inputs ---------- */
+input[type=text],input[type=password],select,textarea{
+  font:inherit;color:var(--ink);background:transparent;border:none;border-bottom:1px solid var(--line);
+  padding:3px 6px;transition:border-color .2s,box-shadow .2s;border-radius:4px 4px 0 0;
+}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 1px 0 var(--accent)}
+::placeholder{color:#b3a090}
+.inline-input{width:150px;max-width:100%}
+.inline-input.score{width:74px}
+.inline-input.sw{width:120px}
+.inline-input.adj{width:190px}
+.note-box{
+  display:block;width:100%;min-height:34px;resize:none;overflow:hidden;   /* compact + auto-adjust */
+  border:1px solid var(--line);border-radius:8px;padding:5px 9px;background:#fffdf9;line-height:1.45;
+}
+input[type=checkbox]{width:16px;height:16px;accent-color:var(--wine);cursor:pointer;vertical-align:-2px}
+select{border:1px solid var(--line);border-radius:8px;padding:3px 7px;font-size:13.5px;background:#fffdf9}
+/* v1.9 DH — text inputs auto-fit their content (JS sets width; these set the bounds) */
+#main-contract input[type=text]:not([maxlength]){min-width:70px;max-width:340px;width:auto}
+.inline-input.editable-field,#main-contract .quote input[type=text]{min-width:120px;max-width:80%}
+.initials-slot input.editable-field{min-width:100%!important;width:100%!important;max-width:none!important}
+
+/* date/time pills — v1.9 DI: ONE fixed, exact size EVERYWHERE (day section, tables,
+   signature blocks, exec line, AI-generated days, print & mobile). Boxes are sized to
+   their real content (2-digit day/month, 4-digit year) and never stretch. */
+.datetime-group{
+  display:inline-flex;align-items:center;gap:3px;white-space:nowrap;flex:0 0 auto;
+  background:rgba(255,250,242,.8);border:1px solid var(--line);border-radius:999px;padding:3px 10px;
+}
+.datetime-group input{
+  width:2.6ch;height:22px;flex:0 0 auto;box-sizing:content-box;
+  text-align:center;border:none;border-bottom:1px dashed var(--line);
+  border-radius:0;background:transparent;padding:0 1px;margin:0;
+  font-family:inherit;font-size:14px;line-height:22px;
+}
+/* guard: the global auto-grow rules must never stretch date boxes */
+#main-contract .datetime-group input[type=text],
+.exec-line .datetime-group input[type=text]{min-width:0!important;max-width:none!important;width:2.6ch}
+#main-contract .datetime-group input[type=text][maxlength="4"],
+.exec-line .datetime-group input[type=text][maxlength="4"]{width:4.8ch}
+.datetime-group input::placeholder{opacity:.55}
+.datetime-group input:focus{outline:none;border-bottom-color:var(--accent)}
+/* exact widths per field length: DD / MM = 2 digits, YYYY = 4 digits, HH:MM = 2 digits */
+.datetime-group input[maxlength="2"]{width:2.6ch}
+.datetime-group input[maxlength="4"]{width:4.8ch}
+.datetime-group i{font-style:normal;color:var(--accent);padding:0 2px}
+/* time pills (HH:MM) use the same 2-digit boxes as day/month */
+.time-group input{width:2.6ch}
+.exec-line,.witness-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
+.witness-line .initials-slot{min-width:200px}
+.witness-line .editable-field{width:100%}
+
+/* ---------- checklists ---------- */
+.checklist-item{display:flex;gap:10px;align-items:flex-start;padding:5px 8px;border-radius:8px;transition:background .2s}
+.checklist-item:hover{background:rgba(200,162,124,.1)}
+.checklist-item label{font-size:14px;cursor:pointer}
+
+/* ---------- day status ---------- */
+.day-finished{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  background:linear-gradient(120deg,rgba(124,45,58,.07),rgba(200,162,124,.1));
+  border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin:12px 0 18px;
+}
+.clear-day-btn{
+  margin-left:auto;font:inherit;font-size:13px;color:var(--no);background:transparent;
+  border:1px solid rgba(140,59,59,.4);border-radius:8px;padding:4px 12px;cursor:pointer;transition:.2s;
+}
+.clear-day-btn:hover{background:rgba(140,59,59,.08)}
+.delete-day-btn{
+  font:inherit;font-size:13px;color:#fff;background:linear-gradient(120deg,#8c3b3b,#b0413e);
+  border:1px solid rgba(140,59,59,.55);border-radius:8px;padding:4px 12px;cursor:pointer;transition:.2s;
+}
+.delete-day-btn:hover{background:linear-gradient(120deg,#a34444,#c94b47);box-shadow:0 2px 8px rgba(140,59,59,.3)}
+
+/* ---------- signature blocks (compact) ---------- */
+.sign-row{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0;align-items:flex-end}
+.sign-field{flex:1 1 170px;min-width:140px}
+.sign-field label{display:block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:1px}
+.sign-field input{width:100%;border-bottom:1.5px solid var(--accent);font-family:var(--serif);font-size:15px;font-style:italic;padding:2px 4px}
+.sign-field .datetime-group{margin-top:2px;width:auto;justify-content:center;padding:3px 10px}
+.sign-field .initials-slot{display:block;width:100%}
+.sign-cards{margin:4px 0 10px}
+.sig-card .accept-btn{margin-top:5px;width:100%}
+.sig-card .sig-status{margin-bottom:1px}
+
+/* locked day (marked finished) — inputs stay visible, only interaction is blocked */
+.page.day-locked input:not([type="checkbox"]),
+.page.day-locked textarea,
+.page.day-locked select,
+.page.day-locked .accept-btn:not(.undoable),
+.page.day-locked .clear-day-btn{pointer-events:none;user-select:none}
+/* Signed/Undo buttons stay clickable in a finished day — Accept is undoable */
+.page.day-locked .accept-btn.undoable{pointer-events:auto;opacity:1}
+.page.day-locked input[type="checkbox"]{cursor:not-allowed}
+.page.day-locked input,.page.day-locked textarea,.page.day-locked select{opacity:.6;background:rgba(220,205,189,.12)}
+/* the status control itself must remain usable so the day can be unlocked again */
+.day-finished .day-finished-select{pointer-events:auto!important;user-select:auto;opacity:1!important;background:#fffdf9}
+.lock-note{
+  display:none;align-items:center;gap:6px;margin:0 0 12px;padding:6px 12px;
+  font-size:13px;color:var(--no);background:rgba(140,59,59,.07);
+  border:1px dashed rgba(140,59,59,.45);border-radius:8px;
+}
+.page.day-locked .lock-note{display:flex}
+
+/* ---------- v2.0 DH — collapsible day pages ----------
+   A finished day collapses automatically (see js/app.js syncLockUI);
+   the ▾/▸ button lets you expand or collapse any day by hand.       */
+.collapse-toggle{
+  font:inherit;font-size:12.5px;color:var(--accent);cursor:pointer;
+  background:transparent;border:1px solid var(--line);border-radius:8px;padding:3px 10px;transition:.2s;
+}
+.collapse-toggle:hover{background:rgba(200,162,124,.14)}
+.page.day-collapsed > *:not(.page-head):not(.day-finished){display:none!important}
+.page.day-collapsed > .lock-note{display:none!important}
+.page.day-collapsed > .page-head .day-badge::after{content:" · collapsed — tap ▸ Expand to open ♥";text-transform:none;letter-spacing:.02em}
+/* PDF/Print safety: never let a collapsed day hide its content in print/PDF output */
+@media print{.page.day-collapsed > *{display:block!important}.page.day-collapsed > table{display:table!important}.collapse-toggle{display:none!important}}
+
+/* ---------- photo signatures on accept (compact) ---------- */
+.initials-slot{position:relative;display:inline-block;min-height:28px}
+.slot-sig{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;
+  opacity:0;transform:rotate(-4deg) scale(.96);
+  transition:opacity .45s ease,transform .45s ease;
+}
+.slot-filled{height:36px}
+.slot-filled .slot-sig{opacity:1;transform:rotate(-4deg) scale(1)}
+.slot-filled input.editable-field{visibility:hidden}   /* hide, don't remove — keeps data intact */
+
+.seal{text-align:center;margin-top:18px;padding-top:14px;border-top:1px dashed var(--line)}
+.seal-title{font-family:var(--serif);font-style:italic;font-size:17px;color:var(--wine);letter-spacing:.04em}
+.accept-btn{
+  font:inherit;font-weight:500;font-size:12.5px;line-height:1.2;letter-spacing:.04em;cursor:pointer;
+  padding:4px 14px;border-radius:999px;border:1px solid var(--wine);color:var(--wine);background:transparent;
+  transition:background .2s,color .2s,box-shadow .2s,transform .15s;
+}
+.accept-btn:hover{background:rgba(124,45,58,.08);transform:translateY(-1px)}
+.accept-btn.undoable{background:var(--wine);color:#fff}
+/* v1.9 DH — compact inline Accept beside every signature row */
+.accept-inline{font-size:11.5px;padding:3px 10px;white-space:nowrap;margin-left:auto}
+.sig-cards{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.sig-card{
+  position:relative;width:170px;border:1px solid var(--line);border-radius:12px;background:#fffdf9;
+  padding:8px 9px 7px;box-shadow:0 6px 16px -10px rgba(42,28,22,.35);transition:border-color .3s,box-shadow .3s;
+}
+.sig-card.signed{border-color:var(--accent-2);box-shadow:0 8px 20px -8px rgba(124,45,58,.45)}
+.sig-card .sig-photo{
+  display:block;width:100%;height:42px;object-fit:contain;opacity:0;transform:rotate(-3deg);
+  transition:opacity .5s ease,transform .5s ease;
+}
+.sig-card.signed .sig-photo{opacity:1;transform:rotate(-3deg) translateY(-2px)}
+.sig-name{display:block;font-family:var(--serif);font-size:13.5px;font-weight:600;color:var(--ink);margin-top:2px}
+.sig-status{display:block;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);margin-top:1px}
+.sig-card.signed .sig-status{color:var(--ok)}
+
+/* ---------- our love stamp (compact, auto-adjusting) ---------- */
+.love-stamp{display:flex;flex-direction:column;align-items:center;gap:2px;margin:14px auto 6px}
+.love-stamp img{max-width:min(210px,45%);height:auto;display:block;transform:rotate(-2deg);filter:drop-shadow(0 4px 10px rgba(124,45,58,.25))}
+.stamp-caption{font-family:var(--serif);font-style:italic;font-size:13px;letter-spacing:.08em;color:var(--wine)}
+@media (max-width:640px){.love-stamp img{max-width:170px}}
+
+/* ---------- debrief grid ---------- */
+.debrief-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 22px;margin:10px 0}
+.debrief-grid .full{grid-column:1/-1}
+.debrief-grid label{font-size:13px;color:var(--ink-soft)}
+
+/* ---------- summary do/don't ---------- */
+.dos-donts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:14px 0}
+.do-card,.dont-card{border-radius:12px;padding:14px 18px;border:1px solid var(--line)}
+.do-card{background:rgba(63,107,74,.08);border-color:rgba(63,107,74,.3)}
+.dont-card{background:rgba(140,59,59,.07);border-color:rgba(140,59,59,.3)}
+.do-card h4{margin:0 0 6px;color:var(--ok)}
+.dont-card h4{margin:0 0 6px;color:var(--no)}
+.dos-donts ul{margin-left:20px;font-size:14px}
+
+/* ---------- footer & buttons ---------- */
+.footer-note{
+  text-align:center;font-size:12.5px;color:var(--ink-soft);
+  border-top:3px double var(--line);padding:16px 8px 6px;margin-top:8px;
+}
+.confidential{font-style:italic;margin-bottom:4px}
+.btn-group{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:22px 0 6px}
+.btn{
+  font:inherit;font-weight:500;letter-spacing:.04em;cursor:pointer;border-radius:999px;
+  padding:9px 22px;transition:transform .15s,box-shadow .2s,background .2s;border:1px solid transparent;
+}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:linear-gradient(120deg,var(--wine),var(--accent));color:#fff;box-shadow:0 8px 20px -8px rgba(124,45,58,.6)}
+.btn-primary:hover{box-shadow:0 10px 26px -8px rgba(124,45,58,.8);transform:translateY(-1px)}
+.btn-outline{background:transparent;color:var(--ink);border-color:var(--accent)}
+.btn-outline:hover{background:rgba(163,112,92,.1)}
+.btn-ghost{background:transparent;color:var(--ink-soft)}
+.btn-ghost:hover{color:var(--ink)}
+
+/* ---------- login overlay ---------- */
+.login-overlay{
+  position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:20px;
+  background:radial-gradient(700px 500px at 50% 30%,rgba(124,45,58,.35),transparent 70%),rgba(14,8,8,.92);
+  backdrop-filter:blur(8px);transition:opacity .5s ease,visibility .5s;
+}
+.login-overlay.hidden{opacity:0;visibility:hidden;pointer-events:none}
+.login-card{
+  width:100%;max-width:420px;text-align:center;position:relative;
+  background:linear-gradient(165deg,var(--paper),var(--paper-2));
+  border:1px solid #cbb69f;border-radius:22px;padding:36px 32px 30px;box-shadow:var(--shadow);
+}
+.login-heart{
+  position:absolute;top:-20px;left:50%;transform:translateX(-50%);
+  width:40px;height:40px;border-radius:50%;display:grid;place-items:center;
+  background:linear-gradient(120deg,var(--wine),var(--accent));color:#fff;font-size:19px;
+  box-shadow:0 6px 16px -4px rgba(124,45,58,.7);animation:beat 1.6s ease-in-out infinite;
+}
+@keyframes beat{0%,100%{transform:translateX(-50%) scale(1)}12%{transform:translateX(-50%) scale(1.18)}24%{transform:translateX(-50%) scale(1)}36%{transform:translateX(-50%) scale(1.12)}}
+.login-card h2{font-family:var(--serif);font-weight:600;font-size:26px;letter-spacing:.04em}
+.login-sub{font-style:italic;font-family:var(--serif);color:var(--accent);margin:2px 0 20px}
+.login-card label{display:block;text-align:left;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px}
+.password-wrapper{position:relative;margin-bottom:12px}
+.password-wrapper input{width:100%;font-size:16px;padding:8px 40px 8px 10px;background:rgba(255,253,249,.8);border:1px solid var(--line);border-radius:10px}
+.password-wrapper input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(163,112,92,.15)}
+.toggle-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:17px;cursor:pointer;opacity:.7}
+.toggle-eye:hover{opacity:1}
+.hint{font-size:12.5px;color:var(--ink-soft);font-style:italic;margin-bottom:16px}
+.login-btn{width:100%}
+.login-error{min-height:20px;margin-top:10px;font-size:13px;color:var(--no)}
+.shake{animation:shake .4s}
+@keyframes shake{20%{transform:translateX(-7px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(3px)}}
+
+/* ---------- modal ---------- */
+.modal-overlay{
+  position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:18px;
+  background:rgba(14,8,8,.75);backdrop-filter:blur(6px);
+}
+.modal-overlay.active{display:flex}
+.modal-card{
+  width:100%;max-width:860px;max-height:88vh;display:flex;flex-direction:column;
+  background:var(--paper);border:1px solid #cbb69f;border-radius:18px;box-shadow:var(--shadow);overflow:hidden;
+}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--line)}
+.modal-header h3{font-family:var(--serif);font-weight:600;font-size:20px}
+.modal-close{background:none;border:none;font-size:26px;line-height:1;color:var(--ink-soft);cursor:pointer}
+.modal-close:hover{color:var(--wine)}
+.modal-tabs{display:flex;gap:8px;padding:12px 22px 0}
+.modal-tabs button{
+  font:inherit;font-size:13px;letter-spacing:.06em;padding:6px 16px;border-radius:999px;cursor:pointer;
+  background:transparent;border:1px solid var(--line);color:var(--ink-soft);transition:.2s;
+}
+.modal-tabs button.active{background:linear-gradient(120deg,var(--wine),var(--accent));color:#fff;border-color:transparent}
+.modal-body{flex:1;overflow:auto;margin:14px 22px;padding:14px 16px;background:#fffdf9;border:1px solid var(--line);border-radius:10px;font-size:13.5px;white-space:pre-wrap;word-break:break-word}
+.modal-body.html-body{white-space:normal}
+.modal-footer{display:flex;gap:10px;justify-content:flex-end;padding:14px 22px;border-top:1px solid var(--line);flex-wrap:wrap}
+
+/* ---------- toast ---------- */
+.toast{
+  position:fixed;left:50%;bottom:26px;z-index:70;transform:translate(-50%,20px);
+  background:linear-gradient(120deg,#2f1d1a,#4a2b24);color:#f6e8d8;font-size:14px;
+  padding:10px 22px;border-radius:999px;border:1px solid rgba(200,162,124,.5);
+  opacity:0;pointer-events:none;transition:opacity .3s,transform .3s;box-shadow:var(--shadow);max-width:90vw;text-align:center;
+  white-space:pre-line;   /* v2.4 DH — let \n render so the "What's new" toast shows bullet lines */
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* ---------- AI assistant modal ---------- */
+.ai-overlay{
+  position:fixed;inset:0;z-index:61;display:none;align-items:center;justify-content:center;padding:18px;
+  background:rgba(14,8,8,.75);backdrop-filter:blur(6px);
+}
+.ai-overlay.active{display:flex}
+.ai-card{
+  width:100%;max-width:640px;max-height:90vh;display:flex;flex-direction:column;
+  background:var(--paper);border:1px solid #cbb69f;border-radius:18px;box-shadow:var(--shadow);overflow:hidden;
+}
+.ai-header{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--line)}
+.ai-header h3{font-family:var(--serif);font-weight:600;font-size:20px}
+.ai-close{background:none;border:none;font-size:26px;line-height:1;color:var(--ink-soft);cursor:pointer}
+.ai-close:hover{color:var(--wine)}
+.ai-body{flex:1;overflow:auto;padding:16px 22px 6px;display:flex;flex-direction:column;gap:14px}
+.ai-block label{display:block;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px}
+.ai-field{width:100%;font:inherit;font-size:14px;background:#fffdf9;border:1px solid var(--line);border-radius:10px;padding:8px 10px;color:var(--ink)}
+.ai-field:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(163,112,92,.15)}
+textarea.ai-field{resize:none;min-height:34px;overflow:hidden}   /* compact + auto-adjust */
+.ai-chips{display:flex;flex-wrap:wrap;gap:8px}
+.ai-chip{
+  font:inherit;font-size:13px;padding:6px 14px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--line);background:#fffdf9;color:var(--ink-soft);transition:.2s;
+}
+.ai-chip:hover{border-color:var(--accent);color:var(--ink)}
+.ai-chip.active{background:linear-gradient(120deg,var(--wine),var(--accent));color:#fff;border-color:transparent}
+.ai-preview{
+  background:#fffdf9;border:1px dashed var(--line);border-radius:10px;padding:12px 14px;
+  font-size:13.5px;max-height:260px;overflow:auto;white-space:normal
+}
+.ai-preview ul,.ai-preview ol{margin-left:20px}
+.ai-preview li{margin:3px 0}
+.ai-preview .muted{color:var(--ink-soft);font-style:italic}
+.ai-footer{display:flex;gap:10px;justify-content:flex-end;padding:14px 22px;border-top:1px solid var(--line);flex-wrap:wrap}
+.ai-footer .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+
+/* ---------- responsive ---------- */
+@media (max-width:640px){
+  .datetime-group{padding:2px 8px}
+  .datetime-group input{height:20px;font-size:13px;line-height:20px}
+  .inline-input{width:110px}
+  .inline-input.adj{width:140px}
+  .debrief-grid{grid-template-columns:1fr}
+  .sign-row{flex-direction:column;gap:8px}
+  .clear-day-btn{margin-left:0}
+  th,td{padding:6px 8px;font-size:13px}
+  .modal-footer .btn{flex:1}
+  .accept-btn{width:100%;padding:5px 12px}
+  .sig-card{width:100%;max-width:240px;padding:7px 8px 6px}
+  .sig-card .sig-photo,.slot-sig{height:36px}
+}
+
+/* ---------- reduced motion ---------- */
+@media (prefers-reduced-motion:reduce){
+  .slot-sig,.sig-card .sig-photo,.accept-btn,.particle,.login-heart{transition:none!important;animation:none!important}
+}
+
+/* ---------- print ---------- */
+@media print{
+  body{background:#fff;padding:0}
+  .particle,.login-overlay,.modal-overlay,.ai-overlay,.btn-group,.toast,.clear-day-btn,.day-finished,.accept-btn,.lock-note{display:none!important}
+  .contract-container{max-width:none;box-shadow:none;border:none;border-radius:0;padding:0}
+  .contract-container::after{display:none}
+  .page{border:1px solid #bbb;break-inside:avoid-page;box-shadow:none;background:#fff;margin-bottom:14px}
+  a{color:inherit;text-decoration:none}
+  input,select,textarea{border-color:#999}
+  /* date/time pills keep their exact on-screen size in print/PDF */
+  .datetime-group input{border:none;border-bottom:1px dashed #999;box-shadow:none;width:2.6ch}
+  .datetime-group input[maxlength="4"]{width:4.8ch}
+  /* show signature photos in print/PDF */
+  .slot-filled .slot-sig{opacity:1!important}
+  .sig-card .sig-photo{opacity:1!important}
+  .sig-status{color:#555}
+}
