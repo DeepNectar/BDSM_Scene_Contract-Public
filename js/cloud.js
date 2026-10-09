@@ -1,17 +1,4 @@
 /* ============================================================
-   Cloud store — v4.1 DH
-   v4.1 fixes ("AI days don't come back after re-login / save button"):
-     • window.dhPersistDays() is now called BEFORE every pull (refresh /
-       login replay / realtime) so the freshest DOM — including days made
-       by "✨ AI Assistant — write our day" — is always in the mirror and
-       reaches Supabase even if an autosave tick was missed.
-     • NEW: mem.days is persisted to localStorage on EVERY change, and the
-       💾 Save button also writes a 'dhContract.cloud.v41' snapshot of the
-       complete cloud mirror. applyRows() merges that snapshot too, so a
-       saved/AI day can NEVER disappear on reload/re-login — no auto-wipe
-       path exists anywhere in the code anymore.
-     • flush() now adopts the newest DOM state before pushing, so closing
-       the tab right after creating an AI day still saves it.
    Cloud store — v4.0 DH
    ALL state lives in Supabase (table `contract_state`).
    Keys stored in the cloud:
@@ -105,23 +92,6 @@
   /* same keys app.js uses for its offline snapshot */
   const LS_DAYS_KEY  = 'dhContract.days.v1';
   const LS_STORE_KEY = 'dhContract.fields.v1';
-  /* v4.1 DH — our OWN durable mirror copy (written on every change, so even
-     if app.js's snapshot logic is bypassed, the days survive reload/login) */
-  const LS_MIRROR_KEY = 'dhContract.cloud.v41';
-
-  const writeMirrorLocal = () => {
-    try {
-      localStorage.setItem(LS_MIRROR_KEY, JSON.stringify({
-        fields: mem.fields, accepts: mem.accepts, days: mem.days, ts: Date.now()
-      }));
-    } catch { /* storage full — cloud copy still authoritative */ }
-  };
-  const readMirrorLocal = () => {
-    try {
-      const m = JSON.parse(localStorage.getItem(LS_MIRROR_KEY));
-      return (m && typeof m === 'object') ? m : null;
-    } catch { return null; }
-  };
 
   const readLocalDays = () => {
     try {
@@ -194,21 +164,12 @@
        (Object.assign used to MERGE stale keys instead of replacing them). */
   let loadPromise = null;
 
-  /* v4.1 DH — adopt the freshest DOM state BEFORE any pull/replay so days that
-     were just created (blank or ✨ AI) on this device can never be left out of
-     the merged list. Safe to call at any time; silently no-ops before app.js
-     has booted (dhPersistDays is registered by app.js). */
-  const adoptDomState = () => {
-    try { if (typeof window.dhPersistDays === 'function') window.dhPersistDays(); } catch { /* not booted yet */ }
-  };
-
   const applyRows = (rows) => {
     /* v4.0 DH — MERGE, never replace-with-empty: whatever is already in the
        mirror or in this device's localStorage snapshot is preserved, so a day
        that was saved can always come back on reload/re-login. */
-    const mirrorSnap  = readMirrorLocal();               // v4.1 — our own durable copy
-    const localDays   = mergeDays(readLocalDays(), mirrorSnap && mirrorSnap.days);
-    const localFields = Object.assign({}, (mirrorSnap && mirrorSnap.fields) || {}, readLocalFields());
+    const localDays   = readLocalDays();
+    const localFields = readLocalFields();
     const cloud = { fields: null, accepts: null, days: null };
     (rows || []).forEach(r => {
       if (r.k === 'fields')  cloud.fields  = r.v || {};
@@ -220,9 +181,6 @@
     mem.days   = mergeDays(cloud.days, mergeDays(mem.days, localDays));
     mem.fields = Object.assign({}, localFields, mem.fields || {}, cloud.fields || {});
     if (cloud.accepts) mem.accepts = cloud.accepts;
-    else if (mirrorSnap && mirrorSnap.accepts) mem.accepts = mirrorSnap.accepts;
-    /* v4.1 — keep the durable local mirror exactly in sync with what we know */
-    writeMirrorLocal();
     /* if the cloud had nothing but we have local data, adopt it upward so the
        next save/flush re-seeds Supabase instead of leaving it empty forever */
     if (!cloud.days && mem.days.length) upsert('days', mem.days);
@@ -296,7 +254,6 @@
     /* force a fresh pull (login / tab focus / realtime push) */
     async refresh() {
       if (!sb) { warn(); return null; }
-      adoptDomState();                                   // v4.1 — never pull over an unsaved new day
       try {
         applyRows(await fetchState());
         cloudReady = true;
@@ -320,13 +277,11 @@
        unload), errors just surface via the status pill on next open. */
     flush() {
       if (!sb) return false;
-      adoptDomState();                                   // v4.1 — newest DOM (AI days included) first
       try {
         upsert('fields',  mem.fields);
         upsert('accepts', mem.accepts);
         upsert('days',    mem.days);
         upsert('wiped',   { flag: mem.wiped });
-        writeMirrorLocal();                              // v4.1 — durable local copy too
         return true;
       } catch (e) { console.warn('[cloud] flush failed', e); return false; }
     },
@@ -348,20 +303,9 @@
       return { ok: ok && pendingWrites === 0, pending: pendingWrites };
     },
 
-    saveFields(fields) { mem.fields = fields;  writeMirrorLocal(); return upsert('fields',  fields); },
-    saveAccepts(a)     { mem.accepts = a;      writeMirrorLocal(); return upsert('accepts', a); },
-    /* v4.1 DH — setMirrorDays(list): authoritative DOM snapshot from app.js's
-       persistDays(). Replaces the mirror (so deletions stick) AND updates this
-       device's durable local copy, then saveDays() pushes it to Supabase. */
-    setMirrorDays(list) {
-      if (!Array.isArray(list)) return;
-      mem.days = list.filter(d => d && d.id && d.html);
-      writeMirrorLocal();
-    },
-    /* v4.1 DH — saveDays MERGES with the mirror instead of replacing it, so an
-       AI day captured by one code path is never dropped by another path that
-       ran with a slightly older DOM snapshot. */
-    saveDays(list)     { mem.days = mergeDays(list, mem.days); writeMirrorLocal(); return upsert('days', mem.days); },
+    saveFields(fields) { mem.fields = fields;  return upsert('fields',  fields); },
+    saveAccepts(a)     { mem.accepts = a;      return upsert('accepts', a); },
+    saveDays(list)     { mem.days = list;      return upsert('days',    list); },
     /* v4.0 DH — no-op kept for backwards compatibility with app.js v3.x calls.
        The sticky "wiped" flag is dead: nothing may auto-clear days anymore. */
     saveWiped()        { return Promise.resolve(true); },
