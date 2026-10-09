@@ -453,6 +453,58 @@ textarea.ai-field{resize:none;min-height:34px;overflow:hidden}   /* compact + au
   .slot-sig,.sig-card .sig-photo,.accept-btn,.particle,.login-heart{transition:none!important;animation:none!important}
 }
 
+/* ============================================================
+   v4.4 DH — BDSM Log Book integration (js/logbook.js)
+   header status line · per-day feed · PRE-SCENE log form · viewer
+   ============================================================ */
+.logbook-status-line{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin:6px auto 2px;font-size:13px;color:var(--ink-soft)}
+.lb-open-btn{font:inherit;font-size:13px;padding:4px 12px;border-radius:999px;border:1px solid var(--accent);background:transparent;color:var(--wine);cursor:pointer;transition:box-shadow .2s,transform .2s}
+.lb-open-btn:hover{box-shadow:0 4px 12px -6px rgba(124,45,58,.55);transform:translateY(-1px)}
+
+/* per-day live feed strip */
+.logbook-feed{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:linear-gradient(120deg,rgba(163,112,92,.10),rgba(200,162,124,.10));border:1px dashed var(--accent-2);border-radius:12px;padding:8px 12px;margin:10px 0;font-size:13px}
+.logbook-feed.has-data{border-style:solid;background:linear-gradient(120deg,rgba(124,45,58,.08),rgba(200,162,124,.12))}
+.lb-feed-title{font-weight:700;color:var(--wine)}
+.lb-chip{background:#fffdf9;border:1px solid var(--line);border-radius:999px;padding:2px 10px;box-shadow:0 2px 6px -4px rgba(42,28,22,.35)}
+.lb-feed-time{color:var(--ink-soft);font-style:italic}
+.lb-feed-empty{flex:1 1 100%}
+.lb-link{margin-left:auto;color:var(--wine);font-weight:600;text-decoration:none;border-bottom:1px dotted var(--wine)}
+.lb-link:hover{color:var(--accent)}
+.lb-day-link{color:var(--wine);text-decoration:none;font-weight:600;border:1px solid var(--accent);border-radius:999px;padding:3px 10px;font-size:13px;background:#fffdf9}
+.lb-day-link:hover{box-shadow:0 4px 12px -6px rgba(124,45,58,.55)}
+
+/* the PRE-SCENE log book form on every day page */
+.lb-form{margin:12px 0}
+.lb-form-box{background:#fffdf9;border:1px solid var(--line);border-radius:var(--radius);padding:0;box-shadow:0 10px 26px -18px rgba(42,28,22,.4)}
+.lb-form-summary{cursor:pointer;padding:12px 16px;font-weight:700;color:var(--wine);list-style:none;display:flex;align-items:center;gap:8px}
+.lb-form-summary::-webkit-details-marker{display:none}
+.lb-form-summary::before{content:"▸";transition:transform .2s;color:var(--accent)}
+details[open].lb-form-box>.lb-form-summary::before{transform:rotate(90deg)}
+.lb-form-note{padding:0 16px;font-size:12.5px}
+.lb-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:12px 16px}
+.lb-group{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--paper);min-width:0}
+.lb-group legend{font-weight:700;color:var(--wine);font-size:13px;padding:0 6px}
+.lb-fld{display:block;margin:6px 0;font-size:12.5px;color:var(--ink-soft)}
+.lb-fld-ctl{display:block;margin-top:3px}
+.lb-fld input[type="text"],.lb-fld select{width:100%;font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fffdf9;color:var(--ink)}
+.lb-fld input:focus,.lb-fld select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(163,112,92,.15)}
+.lb-form-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 16px 14px}
+.lb-push-btn{font-size:14px}
+.lb-saved-note{font-size:12.5px;color:var(--ok)}
+.lb-saved-note:not(:empty)::before{content:""}
+.day-locked .lb-form input,.day-locked .lb-form select,.day-locked .lb-push-btn{pointer-events:none;opacity:.55}
+
+/* full-screen log book viewer + blocked notice */
+.lb-viewer{position:fixed;inset:0;z-index:9999;background:rgba(20,12,9,.72);display:flex;flex-direction:column}
+.lb-viewer.hidden{display:none}
+.lb-viewer-bar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--wine);color:#fff}
+.lb-viewer-title{font-weight:700;flex:1}
+.lb-viewer-open,.lb-viewer-close{color:#fff;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.4);border-radius:8px;padding:4px 12px;cursor:pointer;text-decoration:none;font:inherit}
+.lb-viewer-close{font-size:20px;line-height:1}
+.lb-viewer-blocked{padding:10px 16px;background:#f7e8c9;color:#6b4a12;font-size:13px}
+.lb-viewer-blocked.hidden{display:none}
+.lb-viewer-frame{flex:1;width:100%;border:0;background:#fff}
+
 /* ---------- print ---------- */
 @media print{
   body{background:#fff;padding:0}

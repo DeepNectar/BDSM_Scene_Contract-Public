@@ -146,9 +146,10 @@
     }
   };
 
-  const APP_VERSION = 'v4.3 DH';
+  const APP_VERSION = 'v4.4 DH';
   const WHATS_NEW = [
-    '📔 v4.3: The BDSM Log Book (bdsmlogbook.vercel.app) is now integrated into the Day section — every day page shows a live “From the BDSM Log Book” feed pulled READ-ONLY from the Log Book’s own Supabase cloud (table log_book_data), matched by the day’s execution date, with a “last saved there Xm ago” stamp and one-tap 📔 Open Log Book buttons (header + bottom toolbar). The Log Book keeps saving to its ORIGINAL cloud only — this contract never writes into it.',
+    '📔 v4.4: Fixed the Log Book integration AND made it two-way for pre-scene data — every Day page now carries a “📔 BDSM Log Book — Pre-Scene entries” form right under Article 2 (Date of scene). Fill it in and press 📤 Send (or just 💾 Save): your entries are pushed INTO THE LOG BOOK’S ORIGINAL CLOUD ONLY (same Supabase table log_book_data the bdsmlogbook.vercel.app site itself uses), merged row-by-row so nothing else can be overwritten, one row per contract day. The day feed now also reads the real stored format correctly, so entries you write on either app show up on both.',
+    '📔 v4.3: The BDSM Log Book (bdsmlogbook.vercel.app) is now integrated into the Day section — every day page shows a live “From the BDSM Log Book” feed pulled from the Log Book’s own Supabase cloud (table log_book_data), matched by the day’s execution date, with a “last saved there Xm ago” stamp and one-tap 📔 Open Log Book buttons (header + bottom toolbar).',
     '🩹 v4.2: Fixed the “⚠️ AI apply failed: window.CloudStore.setMirrorDays is not a function” error — persistDays() now probes each cloud method and falls back safely, so ✨ AI-written days ALWAYS reach Supabase even on devices still holding an older cached cloud.js. setMirrorDays() itself now pushes the day list to the cloud immediately as well.',
     '🤖 v4.1: Days made with “✨ AI Assistant — write our day” are now saved to the cloud with ALL their details and come back exactly as they were on every re-login/reload — plus a triple-durable local mirror so no saved day can ever disappear. Still NO auto-wipe anywhere: only your own “✖ Delete day” button removes a day.',
     '🔁 v4.0: Auto-wipe is GONE — every day you save now comes back exactly as it was when you re-login on any device (all day data AND the Pre-Scene Execution Affidavit are restored from the cloud, Day 1 included). Days are only ever removed by your own “✖ Delete day” / wipe buttons.',
@@ -317,6 +318,17 @@
       if (p && typeof p.catch === 'function') p.catch(() => {});
     }
     if (typeof persistDays === 'function') persistDays();  // all created day pages
+
+    /* 2b · v4.4 DH — BDSM Log Book: if any day's pre-scene log form has
+       unsent entries, push them into the LOG BOOK'S OWN cloud (never ours). */
+    try {
+      if (typeof window.dhLogbookAutoPush === 'function') {
+        $$('.page').filter(p => /^day\d+$/.test(p.id)).forEach(pg => {
+          const f = pg.querySelector('.lb-form');
+          if (f && f.dataset.lbDirty === '1') window.dhLogbookAutoPush(pg);
+        });
+      }
+    } catch { /* log book offline → contract save unaffected */ }
 
     /* 3 · wait for the writes to actually land, then tell the truth */
     if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Saving…'; }
@@ -1714,6 +1726,9 @@
   const wireNewDay = page => {
     wireTextareas(page);
     wirePills(page);
+    /* v4.4 DH — freshly created/restored day pages get their BDSM Log Book
+       feed slot + pre-scene form injected and wired (js/logbook.js hook). */
+    try { window.dhLogbookRefreshDom && window.dhLogbookRefreshDom(); } catch { /* ignore */ }
     const clearBtn = $('.clear-day-btn', page);
     if (clearBtn) clearBtn.addEventListener('click', () => clearDay(clearBtn));
     const dfSel = $('.day-finished-select', page);
