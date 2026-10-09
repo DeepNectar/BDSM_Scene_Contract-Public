@@ -473,8 +473,11 @@ textarea.ai-field{resize:none;min-height:34px;overflow:hidden}   /* compact + au
 .lb-day-link{color:var(--wine);text-decoration:none;font-weight:600;border:1px solid var(--accent);border-radius:999px;padding:3px 10px;font-size:13px;background:#fffdf9}
 .lb-day-link:hover{box-shadow:0 4px 12px -6px rgba(124,45,58,.55)}
 
-/* the PRE-SCENE log book form on every day page */
-.lb-form{margin:12px 0}
+/* the PRE-SCENE log book form — v3: a block INSIDE the day's
+   Pre-Scene Execution Affidavit (all columns of every sheet) */
+.lb-form{margin:16px 0 10px;padding:14px 16px;background:#fffdf9;border:1px solid var(--line);border-left:4px solid var(--wine);border-radius:var(--radius);box-shadow:0 10px 26px -18px rgba(42,28,22,.4)}
+.lb-aff-title{margin:0 0 4px;font-size:16px;color:var(--wine)}
+.lb-aff-daytag{font-weight:400;font-style:italic;color:var(--ink-soft);font-size:13px}
 .lb-form-box{background:#fffdf9;border:1px solid var(--line);border-radius:var(--radius);padding:0;box-shadow:0 10px 26px -18px rgba(42,28,22,.4)}
 .lb-form-summary{cursor:pointer;padding:12px 16px;font-weight:700;color:var(--wine);list-style:none;display:flex;align-items:center;gap:8px}
 .lb-form-summary::-webkit-details-marker{display:none}

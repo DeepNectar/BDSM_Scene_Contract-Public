@@ -1,5 +1,21 @@
 /* ============================================================
-   BDSM Log Book integration — v2.0 DH (contract app v4.4)
+   BDSM Log Book integration — v3.0 DH (contract app v4.5)
+   ------------------------------------------------------------
+   v3 CHANGES ("all data columns should come in the day's
+   Pre-Scene Execution Affidavit"):
+     • The 📔 BDSM Log Book form is no longer a separate collapsed
+       box under Article 2 — it is INJECTED INSIDE the "Pre-Scene
+       Execution Affidavit" section of every Day page, as its own
+       block titled "📔 BDSM Log Book — Pre-Scene entries".
+     • EVERY column of EVERY log book sheet now appears as a field:
+       Daily · Scene · Debrief · Toys · Bonus · Dominant journal ·
+       both Feedback sheets — including the Date column, which is
+       auto-filled from Article 2.1 / the affidavit execution date.
+     • New rows are built with the FULL column count of each sheet
+       (missing values become empty cells), so the stored HTML on
+       bdsmlogbook.vercel.app always matches its table headers.
+     • The old floating form is removed automatically on upgrade
+       (cleanup), and the feed slot moved above the affidavit too.
    ------------------------------------------------------------
    Bridges this Eternal Contract app with the companion site
    "Deep & Honey's BDSM Contract Log Book":
@@ -45,7 +61,7 @@
      the log book site itself uses (RLS allows select+upsert on log_book_data) */
   const LB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNqYXhneHN2dGxkY2d2dW56ZXllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2MTQ2MjIsImV4cCI6MjEwNTE5MDYyMn0.JiKiYBGAJCMyDUiArZfRmscTK2XoypBIs1FTNLKpKUQ';
 
-  const LB_LS = 'dhLogbook.v2';           // localStorage mirror of what we pulled/pushed
+  const LB_LS = 'dhLogbook.v3';           // localStorage mirror of what we pulled/pushed
 
   const REFRESH_MS = 5 * 60 * 1000;       // re-pull the log book cloud every 5 min
   let lastPullAt = 0;
@@ -149,6 +165,14 @@
     debriefBody: '💞 Debrief', dailyFeedbackBody: '💌 Sub → Dom feedback',
     dominantFeedbackBody: '💌 Dom → Sub feedback'
   };
+
+  /* v3: FULL width of each sheet (Date col + every data col). Rows we push
+     always carry this many <td>s so they line up with the log book's own
+     table headers even when some fields are left blank. */
+  const SHEET_WIDTH = {};
+  FIELDS.forEach(f => {
+    SHEET_WIDTH[f.sheet] = Math.max(SHEET_WIDTH[f.sheet] || 0, f.col);
+  });
 
   /* ---------- cloud I/O -------------------------------------------------- */
   const lbHeaders = () => ({
@@ -261,6 +285,24 @@
   };
 
   const dayDateKey = page => {
+    /* v3: the affidavit's "Date of execution" pill is the authoritative
+       date for the log book row (it sits inside the Pre-Scene Execution
+       Affidavit itself). Fall back to Article 2.1, then the heading text. */
+    try {
+      const line = page.querySelector('.exec-line');
+      if (line) {
+        const g = line.querySelector('.datetime-group');
+        if (g) {
+          const ins = Array.from(g.querySelectorAll('input'));
+          if (ins.length === 3) {
+            const d = parseInt(ins[0].value, 10);
+            const m = parseInt(ins[1].value, 10);
+            const y = parseInt(ins[2].value, 10);
+            if (d && m && y) return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+          }
+        }
+      }
+    } catch { /* fall through */ }
     /* "2.1 Date of scene" row — the first .datetime-group with 3 numeric
        inputs (DD / MM / YYYY) inside the day page. */
     try {
@@ -309,20 +351,21 @@
 
   const FORM_SHEETS = ['dailyBody','sceneBody','toyBody','bonusBody','dominantBody','debriefBody','dailyFeedbackBody','dominantFeedbackBody'];
 
+  /* v3: the form is a BLOCK of the Pre-Scene Execution Affidavit itself —
+     no collapsing box; every column of every log book sheet is visible. */
   const formHTML = () => `
-    <details class="lb-form-box">
-      <summary class="lb-form-summary">📔 BDSM Log Book — Pre-Scene entries ✍️ (saves to the Log Book’s own cloud)</summary>
-      <p class="lb-form-note muted">Everything you complete here is pushed to <strong>bdsmlogbook.vercel.app</strong>’s
-        original Supabase cloud (table <code>log_book_data</code>) as a row dated for this day — it appears on the
-        Log Book site too, and nowhere else. This contract does not keep its own copy.</p>
-      <div class="lb-form-grid">
-        ${FORM_SHEETS.map(groupHTML).join('')}
-      </div>
-      <div class="lb-form-actions">
-        <button class="btn btn-primary lb-push-btn" type="button">📤 Send to Log Book cloud</button>
-        <span class="lb-saved-note muted"></span>
-      </div>
-    </details>`;
+    <h4 class="lb-aff-title">📔 BDSM Log Book — Pre-Scene entries <span class="lb-aff-daytag"></span></h4>
+    <p class="lb-form-note muted">Every column of the Log Book (${FORM_SHEETS.length} sheets below) is filled right here in the affidavit.
+      Press 📤 and the row for this day is pushed into <strong>bdsmlogbook.vercel.app</strong>’s
+      original Supabase cloud (table <code>log_book_data</code>) — it appears on the Log Book site too,
+      and nowhere else. This contract does not keep its own copy.</p>
+    <div class="lb-form-grid">
+      ${FORM_SHEETS.map(groupHTML).join('')}
+    </div>
+    <div class="lb-form-actions">
+      <button class="btn btn-primary lb-push-btn" type="button">📤 Send to Log Book cloud</button>
+      <span class="lb-saved-note muted"></span>
+    </div>`;
 
   /* ---------- collect values from a form ---------------------------------- */
   const formValues = form => {
@@ -339,10 +382,12 @@
 
   /* ---------- build + merge a row into a sheet's stored HTML --------------
      Keeps every existing row EXCEPT ones matching the same date key or the
-     same __dhn marker (our previous push for this day) — then appends ours. */
+     same __dhn marker (our previous push for this day) — then appends ours.
+     v3: rows are built at the FULL width of the sheet (SHEET_WIDTH), so
+     every log book column has a cell even when left blank. */
   const buildRow = (sheetName, dateKey, vals) => {
     const cols = FIELDS.filter(f => f.sheet === sheetName);
-    const maxCol = Math.max(0, ...cols.map(c => c.col));
+    const maxCol = Math.max(SHEET_WIDTH[sheetName] || 0, ...cols.map(c => c.col));
     let html = `<tr data-lb="__dhn:${dateKey}"><td><input type="text" value="${escH(fmtLBDate(dateKey))}"></td>`;
     for (let c = 1; c <= maxCol; c++) {
       const f = cols.find(x => x.col === c);
@@ -496,11 +541,124 @@
     });
   };
 
+  /* v3: pre-fill the form from this day's affidavit data — every column of
+     every log book sheet gets a value derived from what the couple already
+     wrote in the Day page / Pre-Scene Execution Affidavit. The user can
+     still tweak anything before pressing 📤. */
+  const num2 = s => String(s == null ? '' : s).replace(/[^0-9]/g, '').slice(0, 2);
+  const score10 = v => { const n = parseInt(v, 10); return (!isNaN(n) && n >= 1 && n <= 10) ? String(n) : ''; };
+
+  const fillFormFromAffidavit = (page, form) => {
+    try {
+      const set = (sheet, col, val) => {
+        if (val == null || val === '') return;
+        const lab = form.querySelector(`label.lb-fld[data-sheet="${sheet}"][data-col="${col}"]`);
+        if (!lab) return;
+        const ctl = lab.querySelector('.lb-fld-ctl > *');
+        if (!ctl) return;
+        if (ctl.tagName === 'SELECT') {
+          const want = String(val).trim().toLowerCase();
+          Array.from(ctl.options).forEach(o => { if (o.value.toLowerCase() === want) ctl.value = o.value; });
+        } else {
+          ctl.value = String(val).trim();
+        }
+      };
+      const txt = sel => { const el = page.querySelector(sel); return el ? (el.value != null ? el.value : el.textContent).trim() : ''; };
+
+      /* Article 7 special requests */
+      const art7 = Array.from(page.querySelectorAll('h3.section-title'))
+        .find(h => /Article\s*7/i.test(h.textContent));
+      let subReq = '', domReq = '';
+      if (art7) {
+        let el = art7.nextElementSibling;
+        while (el && el.tagName !== 'H3') {
+          const strong = el.querySelector && el.querySelector('strong');
+          if (strong) {
+            const inp = el.querySelector('input');
+            const v = inp ? inp.value.trim() : '';
+            if (/Submissive/i.test(strong.textContent)) subReq = subReq || v;
+            if (/Dominant/i.test(strong.textContent))   domReq = domReq || v;
+          }
+          el = el.nextElementSibling;
+        }
+      }
+
+      /* debrief grid cells by their label text */
+      const debriefVal = re => {
+        for (const cell of page.querySelectorAll('.debrief-grid > div')) {
+          const lab = cell.querySelector('label:not(.yn)');
+          if (lab && re.test(lab.textContent)) {
+            const yn = Array.from(cell.querySelectorAll('label.yn')).find(l => l.querySelector('input') && l.querySelector('input').checked);
+            const parts = [];
+            if (yn) parts.push(yn.textContent.trim());
+            cell.querySelectorAll('input:not([type="checkbox"])').forEach(i => { if (i.value.trim()) parts.push(i.value.trim()); });
+            const ta = cell.querySelector('textarea');
+            if (ta && ta.value.trim()) parts.push(ta.value.trim());
+            return parts.join(' · ');
+          }
+        }
+        return '';
+      };
+
+      /* Article 2 duration guess from the time pill on the exec line */
+      const execLine = page.querySelector('.exec-line');
+      let dur = '';
+      if (execLine) {
+        const tg = execLine.querySelector('.datetime-group.time-group');
+        if (tg) {
+          const ins = Array.from(tg.querySelectorAll('input')).map(i => i.value.trim()).filter(Boolean);
+          if (ins.length) dur = ins.join(':');
+        }
+      }
+
+      /* toy table rows → Toys-used cell */
+      let toysUsed = '';
+      const toyTable = page.querySelector('.toy-table');
+      if (toyTable) {
+        toysUsed = Array.from(toyTable.querySelectorAll('tr')).slice(1)
+          .map(tr => { const td = tr.querySelector('td'); return td ? td.textContent.trim() : ''; })
+          .filter(Boolean).join(', ');
+      }
+
+      const lead = txt('.day-badge');
+      /* --- Daily sheet --- */
+      set('dailyBody', 4, subReq || debriefVal(/adjustment/i) || '');
+      set('dailyBody', 5, domReq || '');
+      /* --- Scene sheet --- */
+      set('sceneBody', 1, dur);
+      const preambleEl = Array.from(page.querySelectorAll('h3.section-title'))
+        .find(h => /Article\s*1/i.test(h.textContent));
+      const preambleTxt = preambleEl && preambleEl.nextElementSibling
+        ? (preambleEl.nextElementSibling.textContent || '').trim() : '';
+      set('sceneBody', 2, preambleTxt.slice(0, 180));
+      set('sceneBody', 6, lead ? ('Day contract drafted in-app · ' + lead.replace(/\s+·\s+/g, ' / ')) : '');
+      /* --- Debrief sheet --- */
+      const swCell = debriefVal(/safeword used/i);
+      const swMatch = /(RED|YELLOW|GREEN)/i.exec(swCell);
+      set('debriefBody', 2, debriefVal(/adjustment/i));
+      set('debriefBody', 3, swMatch ? swMatch[1].replace(/^./, c => c.toUpperCase()) : (swCell ? 'Yes' : ''));
+      set('debriefBody', 4, debriefVal(/adjustments for next/i));
+      set('debriefBody', 6, score10(debriefVal(/overall satisfaction/i)));
+      set('debriefBody', 7, debriefVal(/debrief notes/i));
+      /* --- Toy sheet --- */
+      set('toyBody', 1, toysUsed);
+      set('toyBody', 4, debriefVal(/aftercare effectiveness/i) ? ('Aftercare effectiveness ' + debriefVal(/aftercare effectiveness/i) + '/10') : '');
+      /* --- Dominant journal --- */
+      set('dominantBody', 5, debriefVal(/overall satisfaction/i) ? ('Session rated ' + debriefVal(/overall satisfaction/i) + '/10') : '');
+    } catch (e) { console.warn('[logbook] affidavit prefill skipped:', e); }
+  };
+
   const wireForms = (root) => {
     $$('.lb-form', root || document).forEach(form => {
       if (form.dataset.lbFormWired) return;
       form.dataset.lbFormWired = '1';
       form.innerHTML = formHTML();
+      const page = form.closest('.page');
+      if (page) {
+        const tag = form.querySelector('.lb-aff-daytag');
+        if (tag) tag.textContent = '· ' + ((page.querySelector('.page-head h2')?.textContent || '').split('—')[0].trim() || page.id);
+        fillFormFromAffidavit(page, form);
+      }
       form.addEventListener('submit', e => { e.preventDefault(); pushDay(form); });
       form.addEventListener('input',  () => { form.dataset.lbDirty = '1'; });
       form.addEventListener('change', () => { form.dataset.lbDirty = '1'; });
@@ -509,30 +667,74 @@
     });
   };
 
+  /* ---------- locate the day's "Pre-Scene Execution Affidavit" block ------ */
+  const findAffidavitAnchor = page => {
+    const heads = $$('h3,h4,.section-title', page);
+    return heads.find(h => /pre-scene execution affidavit/i.test(h.textContent)) || null;
+  };
+
+  /* every section title inside a day page, in document order */
+  const sectionTitles = page => $$('h3.section-title', page);
+
+  /* insert `node` after the last element of the affidavit block — i.e. just
+     before the first heading that is NOT part of the affidavit (the debrief
+     h4 and signature rows stay inside it). */
+  const insertAtAffidavitEnd = (page, anchor, node) => {
+    const all = sectionTitles(page);
+    const idx = all.indexOf(anchor);
+    let stop = null;
+    for (let i = idx + 1; i < all.length; i++) {
+      if (!/scene debrief/i.test(all[i].textContent)) { stop = all[i]; break; }
+    }
+    if (stop) stop.before(node); else page.append(node);
+  };
+
   /* ---------- inject the per-day feed slot + pre-scene form -------------- */
   const ensureFeedSlots = () => {
     $$('.page').filter(p => /^day\d+$/.test(p.id)).forEach(page => {
-      if (!page.querySelector('.logbook-feed')) {
-        const slot = document.createElement('div');
-        slot.className = 'logbook-feed';
-        const tools = page.querySelector('.day-finished');
-        if (tools && tools.parentNode === page) tools.after(slot);
-        else {
-          const head = page.querySelector('.page-head');
-          if (head) head.after(slot); else page.prepend(slot);
-        }
-      }
-      /* v2: the PRE-SCENE log book form — placed right after the Article 2
-         "Session Parameters" table (the day's pre-scene block). */
-      if (!page.querySelector('.lb-form')) {
+      const anchor = findAffidavitAnchor(page);
+      if (anchor) {
+        /* v3 cleanup: remove any stale log book nodes from previous builds
+           (Article-2 details box, old feed slot) — they are re-created
+           inside the Pre-Scene Execution Affidavit below. */
+        page.querySelectorAll('.lb-form').forEach(f => f.remove());
+        const oldFeed = page.querySelector('.logbook-feed');
+        if (oldFeed && oldFeed.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING) oldFeed.remove();
+
+        /* the full-column log book form lives INSIDE the affidavit block */
         const form = document.createElement('form');
         form.className = 'lb-form';
-        const tables = $$('table', page);
-        const anchor = tables.find(t => /2\.1\s*Date of scene/i.test(t.textContent));
-        if (anchor) anchor.after(form);
-        else {
-          const feed = page.querySelector('.logbook-feed');
-          if (feed) feed.after(form); else page.append(form);
+        insertAtAffidavitEnd(page, anchor, form);
+
+        /* live cloud feed sits right above the affidavit heading */
+        if (!page.querySelector('.logbook-feed')) {
+          const slot = document.createElement('div');
+          slot.className = 'logbook-feed';
+          anchor.before(slot);
+        }
+      } else {
+        /* legacy page without an affidavit — keep the old placement so the
+           integration still exists somewhere on the day */
+        if (!page.querySelector('.logbook-feed')) {
+          const slot = document.createElement('div');
+          slot.className = 'logbook-feed';
+          const tools = page.querySelector('.day-finished');
+          if (tools && tools.parentNode === page) tools.after(slot);
+          else {
+            const head = page.querySelector('.page-head');
+            if (head) head.after(slot); else page.prepend(slot);
+          }
+        }
+        if (!page.querySelector('.lb-form')) {
+          const form = document.createElement('form');
+          form.className = 'lb-form';
+          const tables = $$('table', page);
+          const t21 = tables.find(t => /2\.1\s*Date of scene/i.test(t.textContent));
+          if (t21) t21.after(form);
+          else {
+            const feed = page.querySelector('.logbook-feed');
+            if (feed) feed.after(form); else page.append(form);
+          }
         }
       }
     });
