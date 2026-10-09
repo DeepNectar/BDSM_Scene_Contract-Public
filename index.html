@@ -2,17 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- v4.7 DH — full mobile/PWA web-app meta: phone-first viewport (dynamic viewport
+     + safe-area support), status-bar theme colour, Apple standalone mode, PWA manifest -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#2a1c16">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="D&amp;H Contract">
+<meta name="format-detection" content="telephone=no">
+<meta name="description" content="A private, password-gated scene contract web app — phone-first PWA with cloud sync.">
 <title>Deep &amp; Honey · Eternal Contract</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="icon" type="image/svg+xml" href="img/icon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/styles.css?v=47">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="js/supabase-config.js" defer></script>
 <script src="js/cloud.js?v=43" defer></script>
-<script src="js/logbook.js?v=15" defer></script>
+<script src="js/logbook.js?v=16" defer></script>
 </head>
 <body>
 
@@ -223,7 +234,7 @@ document.addEventListener('click', function (e) {
          src="img/soulmate-logo.png">
     <p class="brand-name">Soulmate Code</p>
     <!-- v2.4 DH — app version badge shown on the home screen; keep in sync with APP_VERSION in js/app.js -->
-    <button class="version-badge" id="version-badge" type="button" title="Tap to see what's new in this version">v2.4 DH ♥</button>
+    <button class="version-badge" id="version-badge" type="button" title="Tap to see what's new in this version">v4.7 DH ♥</button>
     <span id="cloud-status" class="cloud-status" title="Checking cloud…">☁️ Connecting to Supabase…</span>
     <!-- v4.3 DH — BDSM Log Book integration: read-only link into https://bdsmlogbook.vercel.app/ (its data stays in that site's own Supabase cloud) -->
     <p class="logbook-status-line"><span id="logbook-status">📔 Connecting to the BDSM Log Book…</span>
@@ -317,6 +328,6 @@ document.addEventListener('click', function (e) {
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="js/app.js?v=45" defer></script>
+<script src="js/app.js?v=47" defer></script>
 </body>
 </html>
