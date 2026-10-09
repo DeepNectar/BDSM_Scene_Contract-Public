@@ -109,7 +109,12 @@
     const del = new Set(readDeleted());
     return (Array.isArray(list) ? list : []).filter(d => d && d.id && !del.has(d.id));
   };
-  window.dhReadDeleted = readDeleted;   // used by js/cloud.js applyRows()/saveDays()
+  /* v4.12 DH — expose the write-side tombstone helpers too, so js/cloud.js can
+     permanently record deletions it observes coming down from the cloud (a day
+     deleted on the OTHER device must never resurrect here). */
+  window.dhReadDeleted = readDeleted;
+  window.dhAddDeleted  = addDeleted;
+  window.dhLiftDeleted = liftDeleted;
 
   /* ---------- v4.11 DH — CREATED-STAMP REGISTRY ("what was created when") ----------
      Every day created on ANY device gets a permanent creation stamp that is pushed
