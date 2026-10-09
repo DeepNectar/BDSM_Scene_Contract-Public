@@ -12,6 +12,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="js/supabase-config.js" defer></script>
 <script src="js/cloud.js?v=42" defer></script>
+<script src="js/logbook.js?v=10" defer></script>
 </head>
 <body>
 
@@ -224,6 +225,9 @@ document.addEventListener('click', function (e) {
     <!-- v2.4 DH — app version badge shown on the home screen; keep in sync with APP_VERSION in js/app.js -->
     <button class="version-badge" id="version-badge" type="button" title="Tap to see what's new in this version">v2.4 DH ♥</button>
     <span id="cloud-status" class="cloud-status" title="Checking cloud…">☁️ Connecting to Supabase…</span>
+    <!-- v4.3 DH — BDSM Log Book integration: read-only link into https://bdsmlogbook.vercel.app/ (its data stays in that site's own Supabase cloud) -->
+    <p class="logbook-status-line"><span id="logbook-status">📔 Connecting to the BDSM Log Book…</span>
+      <button class="lb-open-btn" type="button" data-open-logbook title="Opens https://bdsmlogbook.vercel.app/">📔 Open Log Book</button></p>
     <h1>BDSM Scene-Specific Contract</h1>
     <p class="tagline">Two hearts · one bond · an agreement written in trust and tenderness</p>
     <div class="sub">
@@ -307,6 +311,7 @@ document.addEventListener('click', function (e) {
     <button class="btn btn-primary" id="print-pdf" type="button">📄 Print / PDF</button>
     <button class="btn btn-outline" id="email-contract" type="button">✉ Email data</button>
     <button class="btn btn-outline" id="ai-assistant" type="button">✨ AI write a day</button>
+    <button class="btn btn-outline" id="open-logbook" type="button" data-open-logbook title="Opens https://bdsmlogbook.vercel.app/ — its saves stay in the Log Book's own cloud">📔 BDSM Log Book</button>
   </div>
 </main>
 
