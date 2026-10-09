@@ -136,8 +136,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.0 DH';
+  const APP_VERSION = 'v4.1 DH';
   const WHATS_NEW = [
+    '🤖 v4.1: Days made with “✨ AI Assistant — write our day” are now saved to the cloud with ALL their details and come back exactly as they were on every re-login/reload — plus a triple-durable local mirror so no saved day can ever disappear. Still NO auto-wipe anywhere: only your own “✖ Delete day” button removes a day.',
     '🔁 v4.0: Auto-wipe is GONE — every day you save now comes back exactly as it was when you re-login on any device (all day data AND the Pre-Scene Execution Affidavit are restored from the cloud, Day 1 included). Days are only ever removed by your own “✖ Delete day” / wipe buttons.',
     '💾 v3.9: The Save button is fully alive again — one tap now pushes EVERYTHING to the cloud at once (all Day-section entries, the complete Pre-Scene Execution Affidavit, both signatures and every created day page), shows ⏳ Saving… and only says \"Saved ✓\" after the data has genuinely landed in Supabase. Failed writes retry automatically; if the cloud is unreachable you get an honest warning instead of a silent dead click.',
     '🔁 v3.8: Everything you create during the day is now saved to the cloud — every blank/AI day page, every field, every signature. Real-time sync between devices (the other phone updates within ~1 second), a "synced Xs ago" status pill, and an auto-flush when you close the tab so the newest edits always reach Supabase.',
@@ -1666,8 +1667,16 @@
     const list = $$('.page')
       .filter(p => dayNumber(p.id))
       .map(p => ({ id: p.id, html: p.outerHTML }));
-    window.CloudStore.saveDays(list)
-      .then(ok => { if (!ok && !window.CloudStore.ready) toast('⚠️ Cloud not configured — this day lives in the page only.', 3200); });
+    /* v4.1 DH — ALWAYS refresh the in-memory mirror from the DOM first, even
+       when the list is empty (all days deleted). Previously an empty list was
+       merged with the old mirror and silently dropped the deletion, so a
+       deleted day could resurrect itself on the next pull/re-login. */
+    window.CloudStore.setMirrorDays(list);
+    const p = window.CloudStore.saveDays(list);
+    if (p && typeof p.then === 'function') {
+      p.then(ok => { if (!ok) toast('⚠️ Cloud not reachable — this day lives on this device until sync returns.', 3200); })
+       .catch(() => {});
+    }
   };
   window.dhPersistDays = persistDays;   // used by js/cloud.js flush path & console recovery
   /* NOTE: addDayPage() and ensureSignAccepts() were MOVED UP with bootContract()
