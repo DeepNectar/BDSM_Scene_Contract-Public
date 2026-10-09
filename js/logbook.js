@@ -76,6 +76,21 @@
 
   const $  = sel => document.querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  /* v3.1 FIX: `ctl > *` is a child combinator and jsdom's CSS engine does
+     not support it — every field lookup returned null, so the pre-scene
+     form rendered as labels only (no inputs/selects) and pushing threw.
+     Rewritten with supported combinators; identical behaviour in browsers. */
+  const directChildEl = (root, parentSel, childSel) => {
+    for (const c of Array.from(root.children)) {
+      if (!c.matches || !c.matches(parentSel)) continue;
+      for (const g of Array.from(c.children)) {
+        if (!childSel || g.matches(childSel)) return g;
+      }
+    }
+    return null;
+  };
+  /* the actual input/select inside a .lb-fld-ctl wrapper of a field label */
+  const ctlOf = lab => directChildEl(lab, '.lb-fld-ctl', '*');
 
   const fmtAgo = ts => {
     const s = Math.round((Date.now() - ts) / 1000);
@@ -371,7 +386,7 @@
   const formValues = form => {
     const out = {};                       // sheet -> {col -> value}
     $$('label.lb-fld[data-sheet]', form).forEach(lab => {
-      const ctl = lab.querySelector('.lb-fld-ctl > *');
+      const ctl = ctlOf(lab);
       const val = ((ctl && ctl.value) || '').trim();
       if (!val) return;
       const sh = lab.dataset.sheet, col = Number(lab.dataset.col);
@@ -554,7 +569,7 @@
         if (val == null || val === '') return;
         const lab = form.querySelector(`label.lb-fld[data-sheet="${sheet}"][data-col="${col}"]`);
         if (!lab) return;
-        const ctl = lab.querySelector('.lb-fld-ctl > *');
+        const ctl = ctlOf(lab);
         if (!ctl) return;
         if (ctl.tagName === 'SELECT') {
           const want = String(val).trim().toLowerCase();
