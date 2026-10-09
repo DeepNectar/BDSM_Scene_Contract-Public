@@ -89,12 +89,105 @@
     return cur;
   };
   const isDeletedDay = id => readDeleted().includes(id);
+  /* v4.11b — DEFINED (it was called by addBlankDay but never existed → the very
+     first "➕ Add blank day" click threw a ReferenceError and the new day died
+     before it could be persisted/synced to the other device). Removes the
+     tombstone for a re-created day number so the fresh page can persist,
+     restore and sync normally again. */
+  const liftDeleted = ids => {
+    const cur = new Set(readDeleted());
+    let changed = false;
+    [].concat(ids || []).forEach(id => { if (cur.delete(id)) changed = true; });
+    if (changed) {
+      try { localStorage.setItem(DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() })); }
+      catch { /* storage full — session guard still applies this tab */ }
+    }
+    return cur;
+  };
   /* drop every tombstoned day from a [{id,html}] list (used on all inbound lists) */
   const pruneDeleted = list => {
     const del = new Set(readDeleted());
     return (Array.isArray(list) ? list : []).filter(d => d && d.id && !del.has(d.id));
   };
   window.dhReadDeleted = readDeleted;   // used by js/cloud.js applyRows()/saveDays()
+
+  /* ---------- v4.11 DH — CREATED-STAMP REGISTRY ("what was created when") ----------
+     Every day created on ANY device gets a permanent creation stamp that is pushed
+     to Supabase together with the day list (see persistDays / CloudStore.saveDays),
+     so the other device shows "Created …" too — even for days made before this
+     feature existed, and even if the day's HTML copy in the cloud predates the
+     visible badge (the stamp is merged into the page markup on restore).
+       • key: dhContract.created.v1 → { dayN: epoch-ms }
+       • tombstoned (deleted) ids are ignored, so a stale local entry can never
+         re-stamp a deleted day;
+       • the FIRST stamp recorded for a day id wins (deleting Day N and creating a
+         brand-new Day N afterwards lifts the old stamp — see liftDeleted/addBlankDay). */
+  var CREATED_KEY = 'dhContract.created.v1';   // var → also readable from the service worker
+  const readCreatedMap = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CREATED_KEY));
+      return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    } catch { return {}; }
+  };
+  const writeCreatedMap = m => {
+    try { localStorage.setItem(CREATED_KEY, JSON.stringify(m)); } catch { /* storage full — cloud copy still authoritative */ }
+  };
+  /* record "now" as the creation time of a freshly-made day (idempotent: first stamp wins) */
+  const markDayCreated = id => {
+    if (!dayNumber(id) || isDeletedDay(id)) return;
+    const m = readCreatedMap();
+    if (!m[id]) { m[id] = Date.now(); writeCreatedMap(m); }
+  };
+  /* merge [{createdAt}] stamps coming down from the cloud into the local map */
+  const adoptCreatedStamps = list => {
+    if (!Array.isArray(list)) return;
+    const m = readCreatedMap();
+    let changed = false;
+    list.forEach(d => {
+      if (!d || !dayNumber(d.id) || isDeletedDay(d.id)) return;
+      const t = +d.createdAt;
+      if (t && !m[d.id]) { m[d.id] = t; changed = true; }
+    });
+    if (changed) writeCreatedMap(m);
+  };
+  const createdAtFor = id => { const t = +readCreatedMap()[id]; return t && dayNumber(id) ? t : null; };
+  /* v4.11b — lift the stamp too when a tombstoned day number is re-created fresh */
+  const clearCreatedStamp = id => {
+    const m = readCreatedMap();
+    if (m[id]) { delete m[id]; writeCreatedMap(m); }
+  };
+  /* read the "🕒 Created …" chip already baked into a restored page's HTML, so a
+     stamp created on another device is adopted even when THIS device never saw
+     the cloud createdAt field (e.g. stale cached cloud.js). First valid hit wins. */
+  const scrapeCreatedFromHtml = html => {
+    const m = /🕒 Created (\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})/.exec(String(html || ''));
+    if (!m) return null;
+    const ts = new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]).getTime();
+    return Number.isFinite(ts) ? ts : null;
+  };
+  const fmtCreated = ts => {
+    const d = new Date(ts);
+    const p2 = n => String(n).padStart(2, '0');
+    return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  };
+  /* inject / refresh the visible "🕒 Created …" chip inside a day page head */
+  const setCreatedBadge = (page, ts) => {
+    if (!page) return;
+    const head = $('.page-head', page) || page;
+    let pill = $('.created-at', head);
+    if (!pill) {
+      pill = document.createElement('span');
+      pill.className = 'created-at';
+      pill.title = 'When this day was created — the same stamp syncs to every device via the cloud';
+      head.appendChild(pill);
+    }
+    pill.textContent = '🕒 Created ' + fmtCreated(ts);
+  };
+  const ensureCreatedBadges = root => {
+    const m = readCreatedMap();
+    $$('.page', root).forEach(p => { if (dayNumber(p.id) && m[p.id]) setCreatedBadge(p, +m[p.id]); });
+  };
+  window.dhEnsureCreatedBadges = ensureCreatedBadges;   // used by js/cloud.js after a realtime pull
 
   /* ---------- text-area auto-grow — declared FIRST (v3.7 DH) ----------
      applyFieldData()/loadSaved() call autoGrowAll() during boot, but these
@@ -250,6 +343,7 @@
       restoreDays(window.CloudStore.days());   // re-attach all day pages first…
       loadSaved(window.CloudStore.fields());
       applySignatures();   // re-restore accepted signatures after the gate opens
+      ensureCreatedBadges(document);           // v4.11 DH — "🕒 Created …" on every day, both devices
     };
     Promise.resolve(window.CloudStore.refresh ? window.CloudStore.refresh() : null)
       .then(replay)
@@ -463,11 +557,37 @@
       if (domCreated > cloudCreated && typeof persistDays === 'function') persistDays();
     }
     if (!list || !list.length) return;
+    /* v4.11 DH — adopt creation stamps that rode down with the cloud day list */
+    adoptCreatedStamps(list);
     const summary = $('#summary');
     if (!summary) return;
     list.forEach(d => {
       if (!d || !d.id || !d.html) return;
       if (isDeletedDay(d.id)) return;                // v4.8 DH — deleted days never come back
+      /* v4.11 DH — a day created on the OTHER device before this feature existed
+         has no stamp anywhere: seed one from the oldest evidence we have (the
+         cloud row's updated_at / the local snapshot), first-wins, so both phones
+         show the same "Created" line after the next persist. */
+      if (!createdAtFor(d.id)) {
+        let seed = 0;
+        try {
+          const cu = window.CloudStore && typeof window.CloudStore.dayUpdatedAt === 'function'
+            ? Date.parse(window.CloudStore.dayUpdatedAt(d.id) || '') : NaN;
+          if (Number.isFinite(cu)) seed = cu;
+        } catch { /* ignore */ }
+        if (!seed) {
+          try {
+            const raw = JSON.parse(localStorage.getItem(DAYS_KEY));
+            const loc = raw && Array.isArray(raw.list) ? raw.list.find(x => x && x.id === d.id) : null;
+            const lu = Date.parse((loc && loc.updatedAt) || '');
+            if (Number.isFinite(lu)) seed = lu;
+          } catch { /* ignore */ }
+        }
+        if (seed) {
+          const m = readCreatedMap();
+          if (!m[d.id]) { m[d.id] = seed; writeCreatedMap(m); }
+        }
+      }
       const existing = $('#' + d.id);
       if (existing) {
         /* v4.0 DH — cloud copy wins for STATIC pages (Day 1): replace the
@@ -486,7 +606,7 @@
             }
           } catch { /* keep the static skeleton if swap fails */ }
         }
-        return;
+        continue;   // v4.11 DH — fall through to the badge guard below
       }
       const tpl = document.createElement('template');
       tpl.innerHTML = String(d.html).trim();
@@ -494,6 +614,19 @@
       if (!section || section.tagName !== 'SECTION') return;
       $('#main-contract').insertBefore(section, summary);
       if (typeof wireNewDay === 'function') wireNewDay(section);
+    });
+    /* v4.11b — make sure every restored page visibly carries its creation stamp:
+       scrape a "🕒 Created …" chip baked into the stored HTML into the local map,
+       then (re-)inject the chip so days made BEFORE this feature (or whose saved
+       HTML predates it) also show the date & time on THIS device. */
+    list.forEach(d => {
+      if (!d || !dayNumber(d.id) || isDeletedDay(d.id)) return;
+      const scraped = scrapeCreatedFromHtml(d.html);
+      if (scraped && !createdAtFor(d.id)) {
+        const m = readCreatedMap();
+        m[d.id] = scraped; writeCreatedMap(m);
+      }
+      setCreatedBadge($('#' + d.id), createdAtFor(d.id) || scraped);
     });
     loadSaved();                                       // replay field values into restored days
     syncAllLocks();
@@ -1000,11 +1133,13 @@
     });
   }
 
-  /* append a freshly created day page to the contract */
+  /* ---------- append a freshly created day page to the contract ---------- */
   function addDayPage(p) {
+    markDayCreated('day' + p.n);   // v4.11 DH — permanent creation stamp (syncs via persistDays)
     const tpl = document.createElement('template');
     tpl.innerHTML = dayPageHTML(p).trim();
     const section = tpl.content.firstElementChild;
+    setCreatedBadge(section, createdAtFor('day' + p.n));   // visible "🕒 Created …" chip
     const summary = $('#summary');
     $('#main-contract').insertBefore(section, summary);
     wireNewDay(section);
