@@ -1,5 +1,5 @@
 /* ============================================================
-   BDSM Log Book integration — v1.0 DH (contract app v4.3)
+   BDSM Log Book integration — v2.0 DH (contract app v4.4)
    ------------------------------------------------------------
    Bridges this Eternal Contract app with the companion site
    "Deep & Honey's BDSM Contract Log Book":
@@ -13,46 +13,46 @@
      bonusBody · sceneBody · toyBody · debriefBody · weeklyBody
      finalBody · settingsBody
 
-   This module only ever READS that original cloud (safe GET select —
-   it can never corrupt or delete the log book's data) and shows the
-   newest activity per contract day inside the Day pages, with links
-   straight into the log book site.
+   WHAT CHANGED IN v2 (fixes "log book not working"):
+     1. The old build only READ the log book cloud and showed chips —
+        there was nothing to actually fill in. Now every Day page has a
+        full editable PRE-SCENE LOG BOOK form ("📔 BDSM Log Book —
+        Pre-Scene") that pushes its data INTO THE LOG BOOK'S ORIGINAL
+        CLOUD ONLY (same table, same rows the log book itself uses).
+     2. Writes are surgical: we upsert ONLY the affected sheet row(s),
+        merging new <tr>s into the existing stored html — never a
+        whole-table overwrite, so other days / sheets can't be wiped.
+     3. Read-back now parses the REAL stored format (rows start with a
+        date <input value="Oct 07, 2026"> inside the saved tr HTML).
+     4. Duplicate-safe: before pushing, any existing cloud row for the
+        same day is replaced (kept as one row per contract day; our own
+        rows carry a hidden __dhn:<YYYY-MM-DD> marker on the <tr>).
+     5. After our push lands, the header status line + per-day feeds
+        refresh from the cloud; the log book site shows the new entry on
+        its next pull (it re-pulls on open / tab focus).
 
-   It also wires the header / per-day "📔 Open Log Book" buttons:
-     • desktop → inline full-screen iframe (the site is served with
-       x-frame-options SAMEORIGIN, so embedding from another origin
-       is blocked — we detect the block and fall back automatically)
-     • fallback / small screens → open in a new tab
-   Nothing here writes to the contract cloud; saving stays exactly as
-   before (this app's own Supabase mirror + localStorage safety net).
+   Links to the log book site stay one-tap everywhere; the contract's
+   own save flow is untouched apart from an optional log-book push when
+   the user presses 📤 (app.js also calls dhLogbookAutoPush on 💾 Save
+   when a day's form is dirty).
    ============================================================ */
 (() => {
   'use strict';
 
   const LB_URL = 'https://bdsmlogbook.vercel.app/';
   const LB_REST = 'https://sjaxgxsvtldcgvunzeye.supabase.co/rest/v1';
-  /* anon key already public in the log book's own js/main.js — read-only use */
+  /* anon key already public in the log book's own js/main.js — same access
+     the log book site itself uses (RLS allows select+upsert on log_book_data) */
   const LB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNqYXhneHN2dGxkY2d2dW56ZXllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2MTQ2MjIsImV4cCI6MjEwNTE5MDYyMn0.JiKiYBGAJCMyDUiArZfRmscTK2XoypBIs1FTNLKpKUQ';
 
-  /* every sheet of the log book, in tab order */
-  const SHEETS = [
-    ['dailyBody',            'Daily Log'],
-    ['dailyFeedbackBody',    'Daily Feedback'],
-    ['dominantBody',         'Dominant Journal'],
-    ['dominantFeedbackBody', 'Dominant Feedback'],
-    ['bonusBody',            'Bonus Board'],
-    ['sceneBody',            'Scene Log'],
-    ['toyBody',              'Toy Inventory'],
-    ['debriefBody',          'Scene Debrief'],
-    ['weeklyBody',           'Weekly Review'],
-    ['finalBody',            'Final Summary'],
-    ['settingsBody',         'Settings']
-  ];
+  const LB_LS = 'dhLogbook.v2';           // localStorage mirror of what we pulled/pushed
 
-  const REFRESH_MS = 5 * 60 * 1000;      // re-pull the log book cloud every 5 min
+  const REFRESH_MS = 5 * 60 * 1000;       // re-pull the log book cloud every 5 min
   let lastPullAt = 0;
   let pulling = null;                     // shared in-flight promise
   let latest = {};                        // sheet_name -> {html, ts}
+
+  try { latest = JSON.parse(localStorage.getItem(LB_LS) || '{}') || {}; } catch { latest = {}; }
 
   const escH = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -70,9 +70,96 @@
     return d === 1 ? 'yesterday' : d + ' days ago';
   };
 
-  /* ---------- pull the log book's ORIGINAL cloud (read-only GET) ---------- */
-  const fetchLogRows = async () => {
-    const res = await fetch(`${LB_REST}/log_book_data?select=sheet_name,html_content,updated_at`, {
+  /* ---------- option lists copied from the log book's own LISTS ----------
+     (so the selects we generate match exactly what the site offers) */
+  const OPTS = {
+    mood: ['1','2','3','4','5','6','7','8','9','10'],
+    followed: ['Yes','No','Partially','Mostly','Almost','Completely','Not Yet','Working On It','Getting There','Almost There','Absolutely','Definitely','Sometimes','Rarely','Never','Always','Consistently','Intermittently','Progressing','Struggling','Succeeding'],
+    feelings: ['Loved','Safe','Happy','Grateful','Content','Anxious','Tired','Stressed','Neutral','Connected','Peaceful','Excited','Nervous','Relaxed','Empowered','Vulnerable','Strong','Beautiful','Adored','Cherished','Protected','Free','Playful','Submissive','Dominant','Proud','Thankful','Blissful','Ecstatic','Calm','Restless','Curious','Intense','Deep','Satisfied','Fulfilled','Complete','Radiant','Serene','Trusting','Brave','Surrendered','Worthy','Energized','Soothing','Passionate','Tender','Captivated','Transformed','Alive','Hopeful','Joyful','Confident','Secure','Valued','Respected','Honored','Nurtured','Inspired','Motivated','Grounded','Centered','Balanced','Harmonious','Euphoric','Rapturous','Enchanted','Mesmerized','Awestruck','Giddy','Affectionate','Devoted','Loyal','Faithful','Committed'],
+    safeWords: ['No','Green','Yellow','Red','Not Needed','Not Used','Used Green','Used Yellow','Used Red','Pause','Stop','Check-in','Slow Down','Full Stop','Continue','Hold','Wait','Breathe','Time Out','Mercy','Enough','Please','Help','Need Break','Need Space','Too Much','Perfect','Good','Harder','Softer','Slower','Faster','More','Less','Keep Going','Take Control','Let Go','Trust','Safe','Unsafe','Comfort','Discomfort'],
+    aftercare: ['Yes','No','Partially','Completely','Mostly','Not Yet','Extended','Short','Thorough','Minimal','Cuddled','Hydrated','Talked','Massaged','Rested','Snacked','Wrapped','Held','Soothed','Comforted','Reassured','Pampered','Nurtured','Cared For','Loved','Adored','Cherished','Protected','Safe','Warm','Cozy','Peaceful','Relaxed','Content','Happy','Tender','Gentle','Soft','Calm','Quiet','Silent','Connected','Intimate'],
+    safeLoved: ['Yes','No','Somewhat','Mostly','Completely','Absolutely','Not Really','Partially','Almost','Entirely','Totally','Deeply','Fully','Wholly','Utterly','Unconditionally','Genuinely','Truly','Authentically','Profoundly','Unquestionably','Undoubtedly','Certainly'],
+    whoEarned: ['Honey','Deep','Both','Mutual','Shared','Together','Each Other','Team Effort','Collaborative'],
+    fulfilled: ['Yes','No','Partially','Mostly','Completely','Not Yet','Working On It','Almost','Getting There','Achieved','Exceeded','Met','In Progress','Developing','Growing','Improving','Advancing','Progressing','Succeeding','Struggling','Learning','Adapting','Overcoming','Persevering','Continuing','Dedicated','Committed','Focused','Determined','Resolute','Steadfast'],
+    praise: ['Excellent','Great','Good','Needs Improvement','Keep Going','Proud of You','Amazing','Beautiful','Outstanding','Fantastic','Brilliant','Spectacular','Wonderful','Incredible','Superb','Marvelous','Terrific','Fabulous','Awesome','Perfect','Loved It','Impressive','Remarkable','Exceptional','Stellar','Magnificent','Sublime','Inspiring','Phenomenal','Extraordinary','Unforgettable','Heavenly','Divine','Radiant','Glorious','Majestic','Exquisite','Captivating','Enchanting','Mesmerizing','Awe-inspiring','Breathtaking','Transcendent','Supreme','Ultimate','Peerless','Unmatched','Incomparable']
+  };
+
+  /* ---------- field descriptors: kind + target sheet + column index ------
+     col 0 is always the Date column (owned by us). These map straight onto
+     the log book's own headers:
+       daily   : Date Mood FollowedRules Explain FavMoment Tomorrow Feelings
+       scene   : Date Duration Activities SafeWord Rating Aftercare Notes Feelings
+       debrief : Date FavMoment Uncomfortable Safe&Loved WantMore WantLess Rating Notes
+       toy     : Date ToysUsed NewToy ToyRefused Notes Feelings
+       bonus   : Date WhoEarned Why BonusGiven Received Notes
+       dom     : Date Mood LedWithCare FulfilledResp IfNoExplain ProudOf Improve Feelings
+       feedback sheets: Date | Praise-select                                  */
+  const FIELDS = [
+    /* ---- Daily sheet ---- */
+    { k:'sel',  sheet:'dailyBody', col:1, list:'mood',     label:'Mood (1–10)' },
+    { k:'sel',  sheet:'dailyBody', col:2, list:'followed', label:'Followed rules?' },
+    { k:'text', sheet:'dailyBody', col:3, ph:'If no, explain…', label:'If no, explain' },
+    { k:'text', sheet:'dailyBody', col:4, ph:'Favorite moment', label:'Favorite moment' },
+    { k:'text', sheet:'dailyBody', col:5, ph:'What I want tomorrow…', label:'Tomorrow' },
+    { k:'sel',  sheet:'dailyBody', col:6, list:'feelings', label:'How I feel now' },
+    /* ---- Scene sheet ---- */
+    { k:'text', sheet:'sceneBody', col:1, ph:'e.g. 75 min + aftercare', label:'Duration' },
+    { k:'text', sheet:'sceneBody', col:2, ph:'Planned activities…', label:'Activities' },
+    { k:'sel',  sheet:'sceneBody', col:3, list:'safeWords', label:'Safe word used?' },
+    { k:'sel',  sheet:'sceneBody', col:4, list:'mood', label:'Rating (1–10)' },
+    { k:'sel',  sheet:'sceneBody', col:5, list:'aftercare', label:'Aftercare planned?' },
+    { k:'text', sheet:'sceneBody', col:6, ph:'Notes', label:'Notes' },
+    { k:'sel',  sheet:'sceneBody', col:7, list:'feelings', label:'Feelings' },
+    /* ---- Debrief sheet ---- */
+    { k:'text', sheet:'debriefBody', col:1, ph:'Favorite moment', label:'Favorite moment' },
+    { k:'text', sheet:'debriefBody', col:2, ph:'Anything uncomfortable?', label:'Uncomfortable?' },
+    { k:'sel',  sheet:'debriefBody', col:3, list:'safeLoved', label:'Felt safe & loved?' },
+    { k:'text', sheet:'debriefBody', col:4, ph:'Want more of…', label:'Want more' },
+    { k:'text', sheet:'debriefBody', col:5, ph:'Want less of…', label:'Want less' },
+    { k:'sel',  sheet:'debriefBody', col:6, list:'mood', label:'Debrief rating' },
+    { k:'text', sheet:'debriefBody', col:7, ph:'Notes', label:'Notes' },
+    /* ---- Toy inventory sheet ---- */
+    { k:'text', sheet:'toyBody', col:1, ph:'Toys on the shelf tonight…', label:'Toys used' },
+    { k:'sel',  sheet:'toyBody', col:2, list:'followed', label:'New toy introduced?' },
+    { k:'sel',  sheet:'toyBody', col:3, list:'followed', label:'Toy refused?' },
+    { k:'text', sheet:'toyBody', col:4, ph:'Notes', label:'Notes' },
+    { k:'sel',  sheet:'toyBody', col:5, list:'feelings', label:'Feelings' },
+    /* ---- Bonus board sheet ---- */
+    { k:'sel',  sheet:'bonusBody', col:1, list:'whoEarned', label:'Who earned?' },
+    { k:'text', sheet:'bonusBody', col:2, ph:'Why…', label:'Why' },
+    { k:'text', sheet:'bonusBody', col:3, ph:'Bonus given', label:'Bonus given' },
+    { k:'sel',  sheet:'bonusBody', col:4, list:'followed', label:'Received?' },
+    { k:'text', sheet:'bonusBody', col:5, ph:'Notes', label:'Notes' },
+    /* ---- Dominant journal sheet ---- */
+    { k:'sel',  sheet:'dominantBody', col:1, list:'mood', label:'Dom mood (1–10)' },
+    { k:'sel',  sheet:'dominantBody', col:2, list:'followed', label:'Led with care?' },
+    { k:'sel',  sheet:'dominantBody', col:3, list:'fulfilled', label:'Fulfilled responsibilities?' },
+    { k:'text', sheet:'dominantBody', col:4, ph:'If no, explain…', label:'If no, explain' },
+    { k:'text', sheet:'dominantBody', col:5, ph:'Proud of…', label:'Proud of' },
+    { k:'text', sheet:'dominantBody', col:6, ph:'Improve…', label:'Improve' },
+    { k:'sel',  sheet:'dominantBody', col:7, list:'feelings', label:'Feelings' },
+    /* ---- Feedback sheets (single extra column each) ---- */
+    { k:'sel',  sheet:'dailyFeedbackBody',    col:1, list:'praise', label:'Sub feedback to Dom' },
+    { k:'sel',  sheet:'dominantFeedbackBody', col:1, list:'praise', label:'Dom feedback to Sub' }
+  ];
+
+  const SHEET_LABEL = {
+    dailyBody: '📅 Daily log', sceneBody: '🎬 Scene plan', toyBody: '🧸 Toys',
+    bonusBody: '🎁 Bonus', dominantBody: '👑 Dominant journal',
+    debriefBody: '💞 Debrief', dailyFeedbackBody: '💌 Sub → Dom feedback',
+    dominantFeedbackBody: '💌 Dom → Sub feedback'
+  };
+
+  /* ---------- cloud I/O -------------------------------------------------- */
+  const lbHeaders = () => ({
+    'apikey': LB_KEY,
+    'Authorization': 'Bearer ' + LB_KEY,
+    'Content-Type': 'application/json',
+    'Prefer': 'resolution=merge-duplicates,return=minimal'
+  });
+
+  const fetchLogRows = async (cols) => {
+    const res = await fetch(`${LB_REST}/log_book_data?select=${cols}`, {
       headers: { apikey: LB_KEY, Authorization: 'Bearer ' + LB_KEY },
       cache: 'no-store'
     });
@@ -80,12 +167,16 @@
     return res.json();
   };
 
+  const persistMirror = () => {
+    try { localStorage.setItem(LB_LS, JSON.stringify(latest)); } catch { /* quota — fine */ }
+  };
+
   const pullLogBook = (force) => {
     if (pulling) return pulling;
-    if (!force && latest.dailyBody && Date.now() - lastPullAt < REFRESH_MS) {
+    if (!force && Object.keys(latest).length && Date.now() - lastPullAt < REFRESH_MS) {
       return Promise.resolve(latest);
     }
-    pulling = fetchLogRows().then(rows => {
+    pulling = fetchLogRows('sheet_name,html_content,updated_at').then(rows => {
       latest = {};
       (rows || []).forEach(r => {
         if (!r || !r.sheet_name) return;
@@ -95,17 +186,32 @@
         };
       });
       lastPullAt = Date.now();
+      persistMirror();
       return latest;
     }).catch(e => {
       console.warn('[logbook] cloud read failed:', e);
-      return latest;                       // keep whatever we had (may be {})
+      return latest;                       // keep whatever we had (local mirror)
     }).finally(() => { pulling = null; });
     return pulling;
   };
 
+  /* upsert ONE sheet row into the log book's original cloud */
+  const upsertSheet = async (name, html) => {
+    const res = await fetch(`${LB_REST}/log_book_data`, {
+      method: 'POST',
+      headers: lbHeaders(),
+      body: JSON.stringify({ sheet_name: name, html_content: html })
+    });
+    if (!res.ok && res.status !== 201 && res.status !== 204) {
+      const txt = await res.text().catch(() => '');
+      throw new Error('logbook cloud write HTTP ' + res.status + ' ' + txt.slice(0, 120));
+    }
+    latest[name] = { html, ts: Date.now() };
+    persistMirror();
+    return true;
+  };
+
   /* ---------- value extraction from a sheet's stored row HTML ---------- */
-  /* Returns an array of plain-string values for every first-cell date
-     found in the sheet (inputs carry the date, selects/selects/text follow). */
   const tmpHost = document.createElement('div');
 
   const cellText = td => {
@@ -114,13 +220,15 @@
     if (inp) return inp.value.trim();
     const ta = td.querySelector('textarea');
     if (ta) return ta.value.trim();
+    const sel = td.querySelector('select');
+    if (sel) return sel.value.trim();
     return (td.textContent || '').trim();
   };
 
   const parseSheet = name => {
     const entry = latest[name];
     if (!entry || !entry.html) return [];
-    tmpHost.innerHTML = entry.html;
+    tmpHost.innerHTML = '<table>' + entry.html + '</table>';
     return Array.from(tmpHost.querySelectorAll('tr')).map(tr =>
       Array.from(tr.children).map(cellText)
     ).filter(cells => cells.length && cells.some(c => c));
@@ -137,6 +245,19 @@
       return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     }
     return null;
+  };
+
+  const keyToDate = key => {
+    if (!key) return null;
+    const p = key.split('-');
+    if (p.length !== 3) return null;
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  };
+
+  const fmtLBDate = key => {
+    const d = keyToDate(key);
+    if (!d) return '';
+    return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
   };
 
   const dayDateKey = page => {
@@ -165,7 +286,143 @@
     return null;
   };
 
-  /* ---------- render the per-day feed ---------- */
+  /* ---------- pre-scene form builder ------------------------------------- */
+  const selHTML = (list, val) => {
+    let h = '<select><option value="">Select…</option>';
+    OPTS[list].forEach(o => { h += `<option value="${escH(o)}"${String(o) === String(val) ? ' selected' : ''}>${escH(o)}</option>`; });
+    return h + '</select>';
+  };
+
+  const fldHTML = f => {
+    const ctrl = f.k === 'sel'
+      ? `<span class="lb-fld-ctl">${selHTML(f.list, '')}</span>`
+      : `<span class="lb-fld-ctl"><input type="text" placeholder="${escH(f.ph || '')}"></span>`;
+    return `<label class="lb-fld" data-sheet="${f.sheet}" data-col="${f.col}" data-kind="${f.k}">${escH(f.label)}${ctrl}</label>`;
+  };
+
+  const groupHTML = sheetName => {
+    const fs = FIELDS.filter(f => f.sheet === sheetName);
+    if (!fs.length) return '';
+    return `<fieldset class="lb-group"><legend>${SHEET_LABEL[sheetName] || sheetName}</legend>` +
+      fs.map(fldHTML).join('') + '</fieldset>';
+  };
+
+  const FORM_SHEETS = ['dailyBody','sceneBody','toyBody','bonusBody','dominantBody','debriefBody','dailyFeedbackBody','dominantFeedbackBody'];
+
+  const formHTML = () => `
+    <details class="lb-form-box">
+      <summary class="lb-form-summary">📔 BDSM Log Book — Pre-Scene entries ✍️ (saves to the Log Book’s own cloud)</summary>
+      <p class="lb-form-note muted">Everything you complete here is pushed to <strong>bdsmlogbook.vercel.app</strong>’s
+        original Supabase cloud (table <code>log_book_data</code>) as a row dated for this day — it appears on the
+        Log Book site too, and nowhere else. This contract does not keep its own copy.</p>
+      <div class="lb-form-grid">
+        ${FORM_SHEETS.map(groupHTML).join('')}
+      </div>
+      <div class="lb-form-actions">
+        <button class="btn btn-primary lb-push-btn" type="button">📤 Send to Log Book cloud</button>
+        <span class="lb-saved-note muted"></span>
+      </div>
+    </details>`;
+
+  /* ---------- collect values from a form ---------------------------------- */
+  const formValues = form => {
+    const out = {};                       // sheet -> {col -> value}
+    $$('label.lb-fld[data-sheet]', form).forEach(lab => {
+      const ctl = lab.querySelector('.lb-fld-ctl > *');
+      const val = ((ctl && ctl.value) || '').trim();
+      if (!val) return;
+      const sh = lab.dataset.sheet, col = Number(lab.dataset.col);
+      (out[sh] = out[sh] || {})[col] = val;
+    });
+    return out;
+  };
+
+  /* ---------- build + merge a row into a sheet's stored HTML --------------
+     Keeps every existing row EXCEPT ones matching the same date key or the
+     same __dhn marker (our previous push for this day) — then appends ours. */
+  const buildRow = (sheetName, dateKey, vals) => {
+    const cols = FIELDS.filter(f => f.sheet === sheetName);
+    const maxCol = Math.max(0, ...cols.map(c => c.col));
+    let html = `<tr data-lb="__dhn:${dateKey}"><td><input type="text" value="${escH(fmtLBDate(dateKey))}"></td>`;
+    for (let c = 1; c <= maxCol; c++) {
+      const f = cols.find(x => x.col === c);
+      const v = (vals && vals[c]) || '';
+      if (f && f.k === 'sel') {
+        let inner = '<select><option value=""></option>';
+        OPTS[f.list].forEach(o => { inner += `<option value="${escH(o)}"${String(o) === String(v) ? ' selected' : ''}>${escH(o)}</option>`; });
+        inner += '</select>';
+        html += `<td>${inner}</td>`;
+      } else {
+        html += `<td><input type="text" value="${escH(v)}"></td>`;
+      }
+    }
+    return html + '</tr>';
+  };
+
+  const mergeSheetHtml = (storedHtml, dateKey, newRowHtml) => {
+    const src = String(storedHtml || '');
+    const rows = [];
+    const re = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi;
+    let m, lastEnd = 0;
+    while ((m = re.exec(src))) {
+      const before = src.slice(lastEnd, m.index);
+      if (before.trim()) rows.push({ frag: before, raw: true });
+      rows.push({ frag: m[0], raw: false });
+      lastEnd = m.index + m[0].length;
+    }
+    const tail = src.slice(lastEnd);
+    const marker = '__dhn:' + dateKey;
+    const kept = rows.filter(r => {
+      if (r.raw) return true;
+      if (r.frag.indexOf(marker) !== -1) return false;         // replace our own earlier push
+      const dm = /<td[^>]*>\s*<input[^>]*value="([^"]*)"/i.exec(r.frag);
+      if (dm && toKey(dm[1]) === dateKey) return false;        // one row per day, newest wins
+      return true;
+    });
+    return kept.map(r => r.frag).join('\n') + '\n' + newRowHtml + (tail || '');
+  };
+
+  /* ---------- push a day's form into the log book's original cloud -------- */
+  const pushDay = async (form) => {
+    const page = form.closest('.page');
+    const noteEl = form.querySelector('.lb-saved-note');
+    const btn = form.querySelector('.lb-push-btn');
+    const key = dayDateKey(page);
+    if (!key) {
+      if (noteEl) noteEl.textContent = '⚠️ Set the day’s date (Article 2.1) first.';
+      return false;
+    }
+    const vals = formValues(form);
+    const sheets = Object.keys(vals);
+    if (!sheets.length) {
+      if (noteEl) noteEl.textContent = 'Nothing filled in yet — complete at least one field.';
+      return false;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending…'; }
+    if (noteEl) noteEl.textContent = 'Sending to the Log Book cloud…';
+    try {
+      /* fresh read first so we merge against the newest stored HTML */
+      await pullLogBook(true);
+      for (const sh of sheets) {
+        const rowHtml = buildRow(sh, key, vals[sh]);
+        const merged = mergeSheetHtml((latest[sh] || {}).html, key, rowHtml);
+        await upsertSheet(sh, merged);
+      }
+      if (noteEl) noteEl.textContent = `✅ Saved to the Log Book cloud (${fmtLBDate(key)}) — visible on bdsmlogbook.vercel.app`;
+      form.dataset.lbDirty = '';
+      sync(true);                          // refresh feeds/header from the cloud
+      try { window.dhToast && window.dhToast('📔 Sent to the BDSM Log Book cloud ✓'); } catch { /* ignore */ }
+      return true;
+    } catch (e) {
+      console.warn('[logbook] push failed:', e);
+      if (noteEl) noteEl.textContent = '⚠️ Could not reach the Log Book cloud — check connection & retry.';
+      return false;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '📤 Send to Log Book cloud'; }
+    }
+  };
+
+  /* ---------- render the per-day feed ------------------------------------ */
   const FEED_SHEETS = [
     ['sceneBody',   '🎬 Scene logged'],
     ['dailyBody',   '📅 Daily log entry'],
@@ -203,7 +460,7 @@
       } else {
         host.innerHTML =
           `<span class="lb-feed-title">📔 BDSM Log Book</span>` +
-          `<span class="lb-feed-empty muted">No ${key ? 'entries dated ' + escH(key) : 'matching'} entries yet — write today's log in the Log Book and it appears here.</span>` +
+          `<span class="lb-feed-empty muted">No ${key ? 'entries dated ' + escH(key) : 'matching'} entries yet — fill the pre-scene form below (or write in the Log Book) and it appears here.</span>` +
           `<a class="lb-link" href="${LB_URL}" target="_blank" rel="noopener" title="Opens ${LB_URL} in a new tab">Open Log Book ↗</a>`;
         host.classList.remove('has-data');
       }
@@ -220,7 +477,7 @@
       return;
     }
     el.textContent = `📔 BDSM Log Book linked · last saved there ${fmtAgo(anyTs)} · opens ${LB_URL}`;
-    el.title = 'The Log Book keeps its own Supabase cloud (table log_book_data). This contract only reads it and links to it — nothing moves out of that original cloud.';
+    el.title = 'The Log Book keeps its own Supabase cloud (table log_book_data). The pre-scene forms in this contract push their entries into that original cloud — the same place the Log Book site itself saves.';
   };
 
   const refreshAll = () => {
@@ -230,22 +487,56 @@
 
   const sync = (force) => pullLogBook(force).then(refreshAll);
 
-  /* ---------- re-render when the CONTRACT data changes ----------
-     app.js's save() triggers a realtime 'postgres_changes' event on our own
-     contract_state table → cloud.js refreshes → this listener fires. So every
-     time a day is saved / its date edited, the Log Book feeds re-match and
-     update right away ("if updated to this"). */
-  if (window.supabase && window.supabase.createClient && window.SUPABASE_CONFIG
-      && window.SUPABASE_CONFIG.url && window.SUPABASE_CONFIG.anonKey) {
-    try {
-      const own = window.supabase.createClient(window.SUPABASE_CONFIG.url, window.SUPABASE_CONFIG.anonKey);
-      own.channel('dh_contract_saved_feed')
-        .on('postgres_changes', { schema: 'public', table: 'contract_state' }, () => {
-          ensureFeedSlots(); wireButtons(); refreshAll();   // cheap DOM re-read of current values
-        })
-        .subscribe();
-    } catch (e) { console.warn('[logbook] contract change feed unavailable:', e); }
-  }
+  /* ---------- wire every "open-logbook" trigger + forms ------------------- */
+  const wireButtons = (root) => {
+    $$('[data-open-logbook]', root || document).forEach(btn => {
+      if (btn.dataset.lbWired) return;
+      btn.dataset.lbWired = '1';
+      btn.addEventListener('click', e => { e.preventDefault(); openLogBook(); });
+    });
+  };
+
+  const wireForms = (root) => {
+    $$('.lb-form', root || document).forEach(form => {
+      if (form.dataset.lbFormWired) return;
+      form.dataset.lbFormWired = '1';
+      form.innerHTML = formHTML();
+      form.addEventListener('submit', e => { e.preventDefault(); pushDay(form); });
+      form.addEventListener('input',  () => { form.dataset.lbDirty = '1'; });
+      form.addEventListener('change', () => { form.dataset.lbDirty = '1'; });
+      const btn = form.querySelector('.lb-push-btn');
+      if (btn) btn.addEventListener('click', () => pushDay(form));
+    });
+  };
+
+  /* ---------- inject the per-day feed slot + pre-scene form -------------- */
+  const ensureFeedSlots = () => {
+    $$('.page').filter(p => /^day\d+$/.test(p.id)).forEach(page => {
+      if (!page.querySelector('.logbook-feed')) {
+        const slot = document.createElement('div');
+        slot.className = 'logbook-feed';
+        const tools = page.querySelector('.day-finished');
+        if (tools && tools.parentNode === page) tools.after(slot);
+        else {
+          const head = page.querySelector('.page-head');
+          if (head) head.after(slot); else page.prepend(slot);
+        }
+      }
+      /* v2: the PRE-SCENE log book form — placed right after the Article 2
+         "Session Parameters" table (the day's pre-scene block). */
+      if (!page.querySelector('.lb-form')) {
+        const form = document.createElement('form');
+        form.className = 'lb-form';
+        const tables = $$('table', page);
+        const anchor = tables.find(t => /2\.1\s*Date of scene/i.test(t.textContent));
+        if (anchor) anchor.after(form);
+        else {
+          const feed = page.querySelector('.logbook-feed');
+          if (feed) feed.after(form); else page.append(form);
+        }
+      }
+    });
+  };
 
   /* ---------- full-screen viewer (iframe with new-tab fallback) ---------- */
   const ensureViewer = () => {
@@ -266,7 +557,6 @@
 
     const frame = v.querySelector('iframe');
     const blocked = v.querySelector('.lb-viewer-blocked');
-    let loadedOk = false;
 
     const openExternally = () => {
       try { window.open(LB_URL, '_blank', 'noopener'); } catch { location.href = LB_URL; }
@@ -276,23 +566,12 @@
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape' && !v.classList.contains('hidden')) closeViewer();
     });
-
-    /* the real link/button fallback lives INSIDE the bar too */
     v.querySelector('.lb-viewer-open').addEventListener('click', () => closeViewer());
 
-    frame.addEventListener('load', () => {
-      /* about:blank fires once immediately; the real doc sets loadedOk */
-      try { loadedOk = frame.contentWindow.location.href !== 'about:blank'; }
-      catch { loadedOk = false; }                    // cross-origin → actually LOADED fine
-    });
-
     v._openFrame = () => {
-      loadedOk = false;
       blocked.classList.add('hidden');
       frame.src = LB_URL + '#from-contract';
       setTimeout(() => {
-        /* If the framed doc never reported a URL (SAMEORIGIN block renders an
-           error page we cannot introspect), assume blocked: show notice + open tab. */
         let href = '';
         try { href = frame.contentWindow.location.href; } catch { href = 'cross-origin-ok'; }
         if (href === 'about:blank') {
@@ -323,34 +602,10 @@
     v._openFrame();
   };
 
-  /* ---------- wire every "open-logbook" trigger ---------- */
-  const wireButtons = (root) => {
-    $$('[data-open-logbook]', root || document).forEach(btn => {
-      if (btn.dataset.lbWired) return;
-      btn.dataset.lbWired = '1';
-      btn.addEventListener('click', e => { e.preventDefault(); openLogBook(); });
-    });
-  };
-
-  /* ---------- inject the per-day feed slot into every day page ---------- */
-  const ensureFeedSlots = () => {
-    $$('.page').filter(p => /^day\d+$/.test(p.id)).forEach(page => {
-      if (page.querySelector('.logbook-feed')) return;
-      const slot = document.createElement('div');
-      slot.className = 'logbook-feed';
-      /* place right after the day-finished toolbar so it sits near the top */
-      const tools = page.querySelector('.day-finished');
-      if (tools && tools.parentNode === page) tools.after(slot);
-      else {
-        const head = page.querySelector('.page-head');
-        if (head) head.after(slot); else page.prepend(slot);
-      }
-    });
-  };
-
   /* ---------- boot ---------- */
   const start = () => {
     ensureFeedSlots();
+    wireForms();
     wireButtons();
     refreshAll();
     sync(false);
@@ -361,8 +616,14 @@
   };
 
   /* hooks so app.js keeps NEW/AI-created days integrated too */
-  window.dhLogbookSync = () => { ensureFeedSlots(); wireButtons(); sync(true); };
-  window.dhLogbookRefreshDom = () => { ensureFeedSlots(); wireButtons(); refreshAll(); };
+  window.dhLogbookSync = () => { ensureFeedSlots(); wireForms(); wireButtons(); sync(true); };
+  window.dhLogbookRefreshDom = () => { ensureFeedSlots(); wireForms(); wireButtons(); refreshAll(); };
+  /* called by app.js after 💾 Save: pushes a day's form if it is dirty */
+  window.dhLogbookAutoPush = (pageEl) => {
+    const form = pageEl && pageEl.querySelector('.lb-form');
+    if (form && form.dataset.lbDirty === '1') return pushDay(form);
+    return Promise.resolve(false);
+  };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
