@@ -1094,8 +1094,8 @@
   };
 
   /* hooks so app.js keeps NEW/AI-created days integrated too */
-  window.dhLogbookSync = () => { ensureFeedSlots(); wireForms(); wireButtons(); sync(true); };
-  window.dhLogbookRefreshDom = () => { ensureFeedSlots(); wireForms(); wireButtons(); refreshAll(); };
+  window.dhLogbookSync = () => { ensureFeedSlots(); wireForms(); wireButtons(); try { window.dhWrapTables && window.dhWrapTables(document); } catch { /* ignore */ } sync(true); };
+  window.dhLogbookRefreshDom = () => { ensureFeedSlots(); wireForms(); wireButtons(); try { window.dhWrapTables && window.dhWrapTables(document); } catch { /* ignore */ } refreshAll(); };
   /* called by app.js after 💾 Save: pushes a day's form if it is dirty */
   window.dhLogbookAutoPush = (pageEl) => {
     const form = pageEl && pageEl.querySelector('.lb-form');

@@ -146,8 +146,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.6 DH';
+  const APP_VERSION = 'v4.7 DH';
   const WHATS_NEW = [
+    '📱 v4.7: The contract is now a true phone-first web app (PWA)! Every screen resolution adapts — from the tiniest 320 px phones (iPhone SE, Galaxy Fold cover) through standard & large phones up to small tablets — so ALL content stays visible and nothing gets cut off: safe-area padding for notch/Dynamic Island/home-bar phones, dvh viewport sizing (modals fit the real visible screen even with the on-screen keyboard open), ≥44 px thumb-friendly buttons & date boxes, wide tables that scroll sideways instead of clipping, action buttons in a tidy full-width grid, near-full-screen Email/AI sheets, an "Add to Home Screen" install prompt + badge, and the manifest/apple meta tags wired so it launches standalone like a native app.',
     '💌 v4.6: The HTML email export now carries ALL THREE blocks for every finished day — “Day Section”, “Pre-Scene Execution Affidavit” AND the complete “📔 BDSM Log Book — Pre-Scene entries”: every data column of all eight Log Book sheets (Date, Mood, Followed rules, Duration, Activities, Safe word, Rating, Aftercare, Toys used, Bonus, Dominant journal, Debrief, both Feedback sheets), plus a per-sheet overview table, the cloud status for that date and a one-tap link to bdsmlogbook.vercel.app. The email only READS the on-page form — your entries still live in the Log Book’s original cloud alone.',
     '📔 v4.5: The BDSM Log Book now lives INSIDE the day’s “Pre-Scene Execution Affidavit” — a “📔 BDSM Log Book — Pre-Scene entries” block carrying EVERY column of every Log Book sheet (Daily · Scene · Debrief · Toys · Bonus · Dominant journal · both Feedback sheets). Your affidavit data (date of execution, time, debrief scores & notes, safeword used, Article 7 requests, toy inventory) is auto-filled into the matching columns; tweak anything, then 📤 Send (or 💾 Save) pushes one full-width row per sheet into the Log Book’s ORIGINAL Supabase cloud only — visible on bdsmlogbook.vercel.app, never stored twice.',
     '📔 v4.4: Fixed the Log Book integration AND made it two-way for pre-scene data — every Day page now carries a “📔 BDSM Log Book — Pre-Scene entries” form right under Article 2 (Date of scene). Fill it in and press 📤 Send (or just 💾 Save): your entries are pushed INTO THE LOG BOOK’S ORIGINAL CLOUD ONLY (same Supabase table log_book_data the bdsmlogbook.vercel.app site itself uses), merged row-by-row so nothing else can be overwritten, one row per contract day. The day feed now also reads the real stored format correctly, so entries you write on either app show up on both.',
@@ -459,7 +460,7 @@
      opens a broken share sheet), so the app generates the PDF itself — see
      js/pdf.js. Desktop keeps the native "Print → Save as PDF" dialog. */
   const useGeneratedPDF = () => {
-    if (typeof makeContractPDF !== 'function') return false;
+    if (typeof makeContractPDF !== 'function') return false;   // v4.7 DH: pdf.js not shipped → always use the native print dialog (works in every phone browser too)
     if (isPhone()) return true;                                    // phones: always build the file
     try {                                                           // installed PWA: no browser chrome to print from
       if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
@@ -1728,6 +1729,10 @@
   const wireNewDay = page => {
     wireTextareas(page);
     wirePills(page);
+    /* v4.7 DH — restored/created day pages (and the Log Book blocks injected
+       below) get their tables wrapped in a horizontally scrollable shell so
+       nothing clips on phone screens. */
+    try { wrapTables(page); } catch { /* ignore */ }
     /* v4.4 DH — freshly created/restored day pages get their BDSM Log Book
        feed slot + pre-scene form injected and wired (js/logbook.js hook). */
     try { window.dhLogbookRefreshDom && window.dhLogbookRefreshDom(); } catch { /* ignore */ }
@@ -1825,6 +1830,22 @@
   wireTextareas(document);
   wirePills(document);
   $$('.datetime-group').forEach(() => {});   // keep grouping explicit for readability
+
+  /* ---------- v4.7 DH — phone-first: make every data table horizontally
+     scrollable on narrow screens instead of clipping or squeezing columns.
+     Runs at boot and after each day restore (logbook.js injects its own
+     tables into day pages too, so this must re-run whenever days rebuild). ---------- */
+  const wrapTables = (root) => {
+    $$('table', root || document).forEach(t => {
+      if (t.closest('.table-scroll') || t.closest('.lb-form-box')) return;
+      const w = document.createElement('div');
+      w.className = 'table-scroll';
+      t.parentNode.insertBefore(w, t);
+      w.appendChild(t);
+    });
+  };
+  wrapTables(document);
+  window.dhWrapTables = wrapTables;          // exposed so logbook.js can reuse it
 
   /* ---------- keyboard-safe scrolling: a sticky footer bar would sit on top of
      the on-screen keyboard, so on phones we simply scroll the button into view ---------- */
@@ -2413,8 +2434,34 @@ ${bodyHtml}
   })();
   const savePw = () => { try { localStorage.setItem(PW_KEY, JSON.stringify(pwState)); } catch { /* ignore */ } };
 
-  /* ---------- "Add to Home screen" button ---------- */
-  const installBtn = $('#install-app');
+  /* ---------- "Add to Home screen" button (v4.7 DH — created in JS so the
+     install flow works even though index.html ships without an install UI) ---------- */
+  let installBtn = $('#install-app');
+  if (!installBtn && btnGroup) {
+    installBtn = document.createElement('button');
+    installBtn.type = 'button';
+    installBtn.id = 'install-app';
+    installBtn.className = 'btn btn-outline';
+    installBtn.textContent = '📲 Install app';
+    btnGroup.appendChild(installBtn);
+  }
+  /* v4.7 DH — manual "how to install" sheet for iOS/Safari (no auto-prompt there) */
+  let installModal = $('#install-modal');
+  if (!installModal) {
+    installModal = document.createElement('div');
+    installModal.className = 'modal-overlay';
+    installModal.id = 'install-modal';
+    installModal.setAttribute('role', 'dialog');
+    installModal.setAttribute('aria-modal', 'true');
+    installModal.innerHTML =
+      '<div class="modal-card">' +
+        '<div class="modal-header"><h3 id="install-title">📲 Add our contract to your home screen</h3>' +
+        '<button class="modal-close" id="install-close-btn" type="button" aria-label="Close dialog">×</button></div>' +
+        '<div class="modal-body html-body" id="install-steps" style="white-space:normal"></div>' +
+        '<div class="modal-footer"><button class="btn btn-primary" id="install-close-footer-btn" type="button">Got it ♥</button></div>' +
+      '</div>';
+    document.body.appendChild(installModal);
+  }
   let deferredPrompt = null;
   const alreadyInstalled = () => {
     try {
@@ -2458,7 +2505,7 @@ ${bodyHtml}
   setInstallUI();
 
   /* ---------- manual instructions when there is no auto-prompt (iOS/Safari) ---------- */
-  const installModal = $('#install-modal');
+  /* v4.7 DH — installModal / installSteps resolved above (created in JS if absent) */
   const installSteps = $('#install-steps');
   function showInstallHelp() {
     if (!installModal) { toast('📲 Use your browser menu → “Add to Home screen”.', 3600); return; }
