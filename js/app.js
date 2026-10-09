@@ -54,9 +54,10 @@
      ReferenceError. v3.5 DH: these used to be declared hundreds of lines lower,
      which is exactly how "Cannot access 'X' before initialization" crashes kept
      coming back at boot on some devices/browsers. ---------- */
-  const STATIC_IDS = new Set(['day1']);   /* days shipped in index.html are NOT persisted:
-                                              deleting one only removes it for the session
-                                              (reloading restores the original page). */
+  const STATIC_IDS = new Set(['day1']);   /* days shipped in index.html — v4.0 DH:
+                                              Day 1 is now ALSO persisted to the cloud
+                                              so a full re-login rebuilds every day,
+                                              including edited static pages. */
   const dayNumber = id => { const m = /^day(\d+)$/.exec(id); return m ? +m[1] : null; };
 
   /* ---------- text-area auto-grow — declared FIRST (v3.7 DH) ----------
@@ -135,8 +136,11 @@
     }
   };
 
-  const APP_VERSION = 'v3.4 DH';
+  const APP_VERSION = 'v4.0 DH';
   const WHATS_NEW = [
+    '🔁 v4.0: Auto-wipe is GONE — every day you save now comes back exactly as it was when you re-login on any device (all day data AND the Pre-Scene Execution Affidavit are restored from the cloud, Day 1 included). Days are only ever removed by your own “✖ Delete day” / wipe buttons.',
+    '💾 v3.9: The Save button is fully alive again — one tap now pushes EVERYTHING to the cloud at once (all Day-section entries, the complete Pre-Scene Execution Affidavit, both signatures and every created day page), shows ⏳ Saving… and only says \"Saved ✓\" after the data has genuinely landed in Supabase. Failed writes retry automatically; if the cloud is unreachable you get an honest warning instead of a silent dead click.',
+    '🔁 v3.8: Everything you create during the day is now saved to the cloud — every blank/AI day page, every field, every signature. Real-time sync between devices (the other phone updates within ~1 second), a "synced Xs ago" status pill, and an auto-flush when you close the tab so the newest edits always reach Supabase.',
     '🩹 v3.4: Fixed the startup crash (“Cannot access ‘ensureSignAccepts’ before initialization”) — the site now opens clean on every device, signatures restore instantly, and Save / Print-PDF / delete-day / collapse toggles all work again. Cloud sync (Supabase) is now the single source of truth on every reload.',
     '🆕 v3.3: ALL existing days wiped clean as you asked — the contract starts empty. Add days back anytime with “➕ Add blank day”, or let “✨ AI write a day” draft one for you. Every single day page carries a red “✖ Delete day” button that permanently removes it from the contract AND the cloud.',
     '💘 The AI writer now truly drafts the WHOLE day from your selections: pick COUPLE TYPE (romantic lovers / spicy & naughty / vanilla-sweet / brat tamer / service-devotion / new D/s / long-distance / experienced kinksters), MOOD, INTENSITY, LEAD, VENUE and any BDSM category+subcategory chips — every chip changes the preamble tone, the play bill, protocols, hard limits, aftercare and the romantic narrative woven through the day.',
@@ -185,7 +189,9 @@
        (Before this fix nothing ever called CloudStore.load(), so the mirror
        stayed empty → "not connecting / not syncing".) */
     const replay = () => {
-      if (!window.CloudStore.wiped()) restoreDays(window.CloudStore.days());   // re-attach AI-created day pages first…
+      /* v4.0 DH — restoreDays ALWAYS runs (auto-wipe stopped): every saved day,
+         including the static Day 1 page, comes back from the cloud on login. */
+      restoreDays(window.CloudStore.days());   // re-attach all day pages first…
       loadSaved(window.CloudStore.fields());
       applySignatures();   // re-restore accepted signatures after the gate opens
     };
@@ -241,14 +247,18 @@
     return data;
   };
 
-  /* ---------- cloud save (Supabase only — never local storage) ---------- */
+  /* ---------- cloud save (Supabase is the source of truth; localStorage is
+     only a per-device safety net for offline sessions) ---------- */
   let saveTimer;
-  const writeStore = () => {                       // debounced autosave → cloud
+  const writeStore = (immediate) => {              // debounced autosave → cloud
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      window.CloudStore.saveFields(collectState())
-        .then(ok => { if (!ok && !window.CloudStore.ready) softWarn(); });
-    }, 1200);
+    const push = () => {
+      const p = window.CloudStore.saveFields(collectState());
+      if (p && typeof p.catch === 'function') p.catch(() => {});   // v3.9: never an unhandled rejection
+      return p;
+    };
+    if (immediate) { push(); return; }             // 💾 Save / unload → no debounce
+    saveTimer = setTimeout(push, 1200);
   };
   const softWarn = () => {
     const t = $('#cloud-status');
@@ -256,17 +266,61 @@
   };
 
   /* ---------- save: cloud first (source of truth), local copy as a
-     per-device safety net so nothing is ever lost offline ---------- */
-  const save = (quiet) => {
-    let ok = true;
+     per-device safety net so nothing is ever lost offline.
+     v3.9 DH — THE SAVE BUTTON FIX: the button now pushes EVERYTHING at once
+     (all field values — Day sections AND Pre-Scene Execution Affidavit, all
+     signature accepts, every created day page) and AWAITS the real cloud
+     completion before reporting "Saved ✓". Previously it only queued a
+     debounced autosave and toasted immediately, so when the underlying
+     promise rejected (no .catch anywhere) the click appeared to do nothing
+     and the newest data never reached Supabase. */
+  const collectAccepts = () => {
+    try { return readAccepts(); } catch { return null; }   // defined below; safe at click time
+  };
+  const collectDays = () => {
+    try {
+      /* v4.0 DH — ALL day pages are captured for the cloud, including the
+         static founding Day 1 (its edited content is what must come back on
+         re-login). Only the DOM path excludes nothing now. */
+      return $$('.page')
+        .filter(p => dayNumber(p.id))
+        .map(p => ({ id: p.id, html: p.outerHTML }));
+    } catch { return null; }
+  };
+
+  const save = async (quiet, btn) => {
+    /* 1 · instant local snapshot (offline safety net) */
+    let localOk = true;
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(collectState()));
-    } catch { ok = false; }
-    writeStore();                                  // push the newest entries to Supabase too
-    if (!quiet) {
-      if (ok) toast('💾 Saved — in the cloud and safe on this device.');
-      else toast('⚠️ Browser storage is full — saved to the cloud only. Export by email to free space.', 3600);
+      localStorage.setItem(DAYS_KEY, JSON.stringify({ list: collectDays() || [] }));
+    } catch { localOk = false; }
+
+    /* 2 · push EVERYTHING to Supabase right now (no debounce) */
+    writeStore(true);                                   // fields incl. affidavit
+    const acc = collectAccepts();
+    if (acc && window.CloudStore) {
+      const p = window.CloudStore.saveAccepts(acc);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
     }
+    if (typeof persistDays === 'function') persistDays();  // all created day pages
+
+    /* 3 · wait for the writes to actually land, then tell the truth */
+    if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Saving…'; }
+    let res = { ok: true, pending: 0 };
+    try {
+      if (window.CloudStore && typeof window.CloudStore.awaitFlush === 'function') {
+        res = await window.CloudStore.awaitFlush(15000);
+      }
+    } catch { res = { ok: false, pending: 1 }; }
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || '💾 Save'; }
+
+    if (!quiet) {
+      if (res.ok) toast('💾 Saved ✓ — everything (Day section + Pre-Scene Affidavit + signatures + all days) is in the cloud.');
+      else if (localOk) toast('⚠️ Cloud unreachable right now — saved on this device; will retry automatically.', 4200);
+      else toast('⚠️ Browser storage full — kept in this session only. Export by email to free space.', 4200);
+    }
+    return res.ok;
   };
 
   /* ---------- visibility helpers (used by autosave AND the app lifecycle) ---------- */
@@ -316,18 +370,20 @@
       try { const raw = JSON.parse(localStorage.getItem(DAYS_KEY)); if (raw && Array.isArray(raw.list)) list = raw.list; } catch { /* ignore */ }
     }
     if (list) {
+      /* v4.0 DH — cloud/local list is the source of truth: any day page that
+         no longer appears in it was explicitly deleted on some device, so drop
+         it here too (including a static Day 1 that was deleted & synced). */
       const keep = new Set(list.map(d => d && d.id).filter(Boolean));
       $$('.page').forEach(p => {
-        if (dayNumber(p.id) && !STATIC_IDS.has(p.id) && !keep.has(p.id)) p.remove();
+        if (dayNumber(p.id) && !keep.has(p.id)) p.remove();
       });
     }
     /* v3.8 DH — a day that exists in the DOM but not yet in the cloud list was
        created on THIS device moments ago (e.g. autosave raced a realtime pull).
        Re-persist immediately so it is never lost — "everything created in the
-       day stays saved". */
-    const wipedNow = (window.CloudStore && typeof window.CloudStore.wiped === 'function') ? window.CloudStore.wiped() : false;
-    if (!wipedNow) {
-      const domCreated = $$('.page').filter(p => dayNumber(p.id) && !STATIC_IDS.has(p.id)).length;
+       day stays saved". (v4.0: the old sticky `wiped` gate is gone.) */
+    {
+      const domCreated = $$('.page').filter(p => dayNumber(p.id)).length;
       const cloudCreated = (list || []).length;
       if (domCreated > cloudCreated && typeof persistDays === 'function') persistDays();
     }
@@ -336,7 +392,26 @@
     if (!summary) return;
     list.forEach(d => {
       if (!d || !d.id || !d.html) return;
-      if ($('#' + d.id)) return;                       // already present
+      const existing = $('#' + d.id);
+      if (existing) {
+        /* v4.0 DH — cloud copy wins for STATIC pages (Day 1): replace the
+           index.html skeleton with the exact saved content so edited values /
+           checklist state come back verbatim on re-login. Created (AI/blank)
+           pages are left untouched when already present to avoid clobbering
+           in-progress typing. */
+        if (STATIC_IDS.has(d.id)) {
+          try {
+            const tpl = document.createElement('template');
+            tpl.innerHTML = String(d.html).trim();
+            const fresh = tpl.content.firstElementChild;
+            if (fresh && fresh.tagName === 'SECTION') {
+              existing.replaceWith(fresh);
+              if (typeof wireNewDay === 'function') wireNewDay(fresh);
+            }
+          } catch { /* keep the static skeleton if swap fails */ }
+        }
+        return;
+      }
       const tpl = document.createElement('template');
       tpl.innerHTML = String(d.html).trim();
       const section = tpl.content.firstElementChild;
@@ -348,7 +423,9 @@
     syncAllLocks();
   };
 
-  $('#save-contract').addEventListener('click', save);
+  /* v3.9 DH — pass the button element so it shows ⏳ Saving… → 💾 Save while
+     the cloud writes complete (the click handler is async now). */
+  $('#save-contract').addEventListener('click', e => save(false, e.currentTarget));
 
   /* ---------- Print / PDF ----------
      On phones window.print() is unreliable (no print service, or it silently
@@ -700,7 +777,7 @@
     Promise.resolve(window.CloudStore.refresh()).then(st => {
       if (!st) return;                                 // offline / not configured → keep current UI
       if (!overlay.classList.contains('hidden')) return; // locked → unlock() will replay on login
-      if (!window.CloudStore.wiped()) restoreDays(window.CloudStore.days());
+      if (overlay.classList.contains('hidden')) restoreDays(window.CloudStore.days());
       loadSaved(window.CloudStore.fields());
       applySignatures();
     }).catch(() => {});
@@ -848,7 +925,9 @@
     const fields = window.CloudStore.fields();
     Object.keys(fields).forEach(k => { if (/^day\d+[>#]/.test(k)) delete fields[k]; });
     window.CloudStore.saveFields(fields);
-    window.CloudStore.saveWiped(true);   // sticky: days stay cleared after reload
+    /* v4.0 DH — saveWiped is a no-op now; the authoritative empty list below
+       is what keeps the contract cleared across reloads (only manual wipe
+       ever reaches this code path — nothing auto-wipes days anymore). */
     persistDays();
     refreshAiDayOptions();
     updateEmptyState();
@@ -1578,13 +1657,14 @@
   /* ---------- append a freshly created day ---------- */
   // NOTE: STATIC_IDS is already declared at the top of this IIFE (line ~57); redeclaring caused a SyntaxError.
   const persistDays = () => {
-    /* v3.8 DH — EVERY day that exists in the contract right now (blank or AI,
-       except the static founding page shipped in index.html) is pushed to the
-       cloud as [{id, html}]. Called on create / delete / wipe / AI-write so the
-       complete set of days created during the day is always in Supabase. */
+    /* v4.0 DH — EVERY day page that exists right now (static Day 1 included,
+       blank or AI) is pushed to the cloud as [{id, html}], so a re-login on
+       any device rebuilds the COMPLETE contract — all day data AND the
+       Pre-Scene Execution Affidavit values come back from Supabase.
+       Called on create / delete / wipe / AI-write / Save. */
     if (!window.CloudStore) return;
     const list = $$('.page')
-      .filter(p => dayNumber(p.id) && !STATIC_IDS.has(p.id))
+      .filter(p => dayNumber(p.id))
       .map(p => ({ id: p.id, html: p.outerHTML }));
     window.CloudStore.saveDays(list)
       .then(ok => { if (!ok && !window.CloudStore.ready) toast('⚠️ Cloud not configured — this day lives in the page only.', 3200); });

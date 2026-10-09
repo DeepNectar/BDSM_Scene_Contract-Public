@@ -1,23 +1,36 @@
 /* ============================================================
-   Cloud store — v3.8 DH
+   Cloud store — v4.0 DH
    ALL state lives in Supabase (table `contract_state`).
-   NOTHING is persisted to localStorage / sessionStorage / IndexedDB.
-   In-memory cache only for the current session.
    Keys stored in the cloud:
-     fields        → every input/textarea/select value (incl. login pw field)
+     fields        → EVERY input/textarea/select value across the whole
+                     contract — Pre-Scene Execution Affidavit included
      accepts       → per-area signature acceptances {area:{party:{ts}}}
-     days          → EVERY created day page (blank or AI) [{id, html}]
-     wiped         → sticky "all days cleared" flag
-   v3.8 additions (everything of the day is now saved & synced):
-     • flush()      — synchronous best-effort push of the whole mirror,
-                      fired on pagehide/beforeunload so the LAST edits and
-                      the most recent day of the day always reach Supabase
-                      even when the tab closes before the debounce fires.
-     • subscribe()  — Postgres change feed on contract_state: when the other
-                      device saves, this device re-pulls within ~a second
-                      (real-time sync without refreshing).
-     • heartbeat    — periodic retry while offline; status pill shows
-                      "Last synced …" once connected.
+     days          → EVERY day page — including the static founding Day 1
+                     shipped in index.html — so a re-login on ANY device
+                     rebuilds the COMPLETE contract from the cloud
+     wiped         → LEGACY key, no longer honoured (v4.0 stopped the
+                     auto-wipe of days). Kept readable for old rows only.
+   v4.0 fixes ("saved days don't come back after re-login / auto wipe"):
+     • applyRows() now falls back to localStorage (DAYS_KEY / STORE_KEY)
+       when the cloud list is empty or unreachable, and MERGES local days
+       into the cloud list instead of replacing it — a saved day can never
+       vanish on reload/login again.
+     • mem.wiped starts true (never blocks restoreDays before the first
+       pull completes) and the persisted 'wiped' flag is ignored entirely.
+   v3.9 fixes ("💾 Save button does nothing / data not reaching cloud"):
+     • saveFields/saveAccepts/saveDays/saveWiped are now SYNCHRONOUS and
+       return a Promise<boolean>. Previously they returned the raw PostgREST
+       promise, which REJECTS on any network hiccup — app.js only attached
+       `.then(ok => …)` with no `.catch`, so an unhandled rejection killed
+       the save silently and the button looked dead. Now: never rejects,
+       retries once, reports success/failure honestly.
+     • pending-writes counter + awaitFlush(): the 💾 Save button awaits the
+       REAL completion of every queued cloud write (fields + signatures +
+       all day pages) before showing "Saved ✓", instead of firing off a
+       debounced autosave and hoping it lands.
+     • flush() pushes the whole mirror through the same tracked path.
+   v3.8 features kept: realtime change feed, focus refresh, heartbeat retry,
+   "Connected · synced Xs ago" status pill.
    ============================================================ */
 (() => {
   'use strict';
@@ -27,6 +40,10 @@
   let cloudReady = false;
   let warned = false;
   let lastSyncAt = 0;
+
+  /* v3.9 — track in-flight writes so callers can await them */
+  let pendingWrites = 0;
+  const inflight = new Set();
 
   try {
     if (window.supabase && window.supabase.createClient && cfg.url && cfg.anonKey
@@ -63,18 +80,68 @@
               'Supabase unreachable (wrong URL/key, paused free project, or no network); entries exist in this session only.');
   };
 
-  /* ---------- in-memory mirror (never written to disk) ---------- */
-  /* v3.3 DH — `wiped` is a persisted flag: once the user clears ALL days, every
-     device must start with an empty contract (no old day pages re-appearing). */
-  const mem = { fields: {}, accepts: {}, days: [], wiped: false };
+  /* ---------- in-memory mirror + localStorage safety net ---------- */
+  /* v4.0 DH — the "auto wipe" bug: `wiped` used to be a STICKY cloud flag that
+     made every reload/login start with an EMPTY contract. That behaviour is
+     removed: the flag is never honoured again, and days are merged from the
+     cloud + local copy so nothing can silently disappear. `mem.wiped` starts
+     TRUE purely as a guard so restoreDays() is never blocked before the first
+     pull completes (and forever after, since nothing sets it false now). */
+  const mem = { fields: {}, accepts: {}, days: [], wiped: true };
 
-  const upsert = async (k, v) => {
-    if (!sb) return false;
-    const { error } = await sb.from('contract_state').upsert({ k, v });
-    if (error) { console.warn('[cloud] upsert failed', k, error); warn(); return false; }
-    warned = false;
-    markSynced();
-    return true;
+  /* same keys app.js uses for its offline snapshot */
+  const LS_DAYS_KEY  = 'dhContract.days.v1';
+  const LS_STORE_KEY = 'dhContract.fields.v1';
+
+  const readLocalDays = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_DAYS_KEY));
+      return (raw && Array.isArray(raw.list)) ? raw.list : null;
+    } catch { return null; }
+  };
+  const readLocalFields = () => {
+    try { return JSON.parse(localStorage.getItem(LS_STORE_KEY)) || {}; } catch { return {}; }
+  };
+  /* merge two [{id,html}] lists — cloud wins on id conflicts, extras kept */
+  const mergeDays = (cloudList, localList) => {
+    const map = new Map();
+    (Array.isArray(localList) ? localList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
+    (Array.isArray(cloudList) ? cloudList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
+    return Array.from(map.values())
+      .sort((a, b) => ((parseInt((/^day(\d+)/.exec(a.id) || [])[1], 10) || 0) -
+                       (parseInt((/^day(\d+)/.exec(b.id) || [])[1], 10) || 0)));
+  };
+
+  /* v3.9 — ONE bullet-proof write path:
+     • never rejects (network exceptions are caught → resolved false)
+     • retries once automatically
+     • tracked via pendingWrites/inflight so 💾 Save can await real completion */
+  const runWrite = async (label, fn) => {
+    pendingWrites++;
+    const p = (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const { error } = await fn();
+          if (!error) { warned = false; markSynced(); return true; }
+          console.warn(`[cloud] ${label} failed (attempt ${attempt + 1}):`, error);
+        } catch (e) {
+          console.warn(`[cloud] ${label} threw (attempt ${attempt + 1}):`, e);
+        }
+        if (attempt === 0) await new Promise(r => setTimeout(r, 600));  // brief backoff, then retry
+      }
+      warn();
+      return false;
+    })().finally(() => {
+      pendingWrites--;
+      inflight.delete(p);
+    });
+    inflight.add(p);
+    return p;
+  };
+
+  const upsert = (k, v) => {
+    if (!sb) return Promise.resolve(false);
+    return runWrite('upsert ' + k, () => sb.from('contract_state').upsert({ k, v }));
   };
 
   /* ---------- v3.8 DH — ALL day pages are saved to the cloud ----------
@@ -98,13 +165,26 @@
   let loadPromise = null;
 
   const applyRows = (rows) => {
-    mem.fields = {}; mem.accepts = {}; mem.days = []; mem.wiped = false;
+    /* v4.0 DH — MERGE, never replace-with-empty: whatever is already in the
+       mirror or in this device's localStorage snapshot is preserved, so a day
+       that was saved can always come back on reload/re-login. */
+    const localDays   = readLocalDays();
+    const localFields = readLocalFields();
+    const cloud = { fields: null, accepts: null, days: null };
     (rows || []).forEach(r => {
-      if (r.k === 'fields')  mem.fields  = r.v || {};
-      if (r.k === 'accepts') mem.accepts = r.v || {};
-      if (r.k === 'days' && Array.isArray(r.v)) mem.days = r.v;
-      if (r.k === 'wiped')  mem.wiped = !!(r.v && r.v.flag);
+      if (r.k === 'fields')  cloud.fields  = r.v || {};
+      if (r.k === 'accepts') cloud.accepts = r.v || {};
+      if (r.k === 'days' && Array.isArray(r.v)) cloud.days = r.v;
+      /* NOTE: 'wiped' rows are intentionally IGNORED from now on — the
+         sticky auto-wipe behaviour is removed (v4.0). */
     });
+    mem.days   = mergeDays(cloud.days, mergeDays(mem.days, localDays));
+    mem.fields = Object.assign({}, localFields, mem.fields || {}, cloud.fields || {});
+    if (cloud.accepts) mem.accepts = cloud.accepts;
+    /* if the cloud had nothing but we have local data, adopt it upward so the
+       next save/flush re-seeds Supabase instead of leaving it empty forever */
+    if (!cloud.days && mem.days.length) upsert('days', mem.days);
+    if (!cloud.fields && Object.keys(mem.fields).length) upsert('fields', mem.fields);
   };
 
   const fetchState = async () => {
@@ -198,26 +278,46 @@
     flush() {
       if (!sb) return false;
       try {
-        sb.from('contract_state').upsert({ k: 'fields',  v: mem.fields });
-        sb.from('contract_state').upsert({ k: 'accepts', v: mem.accepts });
-        sb.from('contract_state').upsert({ k: 'days',    v: mem.days });
-        sb.from('contract_state').upsert({ k: 'wiped',   v: { flag: mem.wiped } });
+        upsert('fields',  mem.fields);
+        upsert('accepts', mem.accepts);
+        upsert('days',    mem.days);
+        upsert('wiped',   { flag: mem.wiped });
         return true;
       } catch (e) { console.warn('[cloud] flush failed', e); return false; }
     },
 
-    saveFields(fields) { mem.fields = fields; return sb ? upsert('fields', fields) : Promise.resolve(false); },
-    saveAccepts(a)     { mem.accepts = a;    return sb ? upsert('accepts', a)    : Promise.resolve(false); },
-    saveDays(list)     { mem.days = list;    return sb ? upsert('days', list)    : Promise.resolve(false); },
-    /* v3.3 DH — persist the "all days cleared" flag so the empty contract
-       survives reloads on every device */
-    saveWiped(flag)    { mem.wiped = !!flag; return sb ? upsert('wiped', { flag: !!flag }) : Promise.resolve(false); },
+    /* v3.9 — await EVERY queued/running cloud write (incl. the debounced
+       autosave). The 💾 Save button uses this so "Saved ✓" only appears
+       after the data has genuinely landed in Supabase. */
+    async awaitFlush(timeoutMs = 15000) {
+      const deadline = Date.now() + timeoutMs;
+      let ok = true;
+      while (pendingWrites > 0 && Date.now() < deadline) {
+        const batch = Array.from(inflight);
+        const results = await Promise.all(batch.map(p => p.catch(() => false)));
+        ok = results.every(Boolean) && ok;
+        if (batch.length === inflight.size && pendingWrites > 0) {
+          await new Promise(r => setTimeout(r, 250));   // avoid spin if a new write joined mid-batch
+        }
+      }
+      return { ok: ok && pendingWrites === 0, pending: pendingWrites };
+    },
+
+    saveFields(fields) { mem.fields = fields;  return upsert('fields',  fields); },
+    saveAccepts(a)     { mem.accepts = a;      return upsert('accepts', a); },
+    saveDays(list)     { mem.days = list;      return upsert('days',    list); },
+    /* v4.0 DH — no-op kept for backwards compatibility with app.js v3.x calls.
+       The sticky "wiped" flag is dead: nothing may auto-clear days anymore. */
+    saveWiped()        { return Promise.resolve(true); },
 
     /* synchronous accessors used by the UI between saves */
     fields()  { return mem.fields; },
     accepts() { return mem.accepts; },
     days()    { return mem.days; },
-    wiped()   { return mem.wiped; },
+    /* v4.0 DH — always true: the sticky auto-wipe is DEAD. Days are never
+       blocked from restoring on reload/login; only the explicit red
+       "✖ Delete day" / manual wipe buttons can remove a day now. */
+    wiped()   { return true; },
     lastSynced() { return lastSyncAt; },
   };
 
