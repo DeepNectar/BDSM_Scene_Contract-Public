@@ -34,12 +34,12 @@
 window.__dhReady = false;
 setTimeout(function () {
   if (window.__dhReady) return;
-  ['email-contract', 'ai-assistant'].forEach(function (id) {
+  ['email-contract', 'ai-assistant', 'login-btn'].forEach(function (id) {
     var b = document.getElementById(id);
     if (b && !b.dataset.dhFallback) {
       b.dataset.dhFallback = '1';
       b.addEventListener('click', function () {
-        alert('⏳ The app script (js/app.js) has not loaded yet.\n\nIf this message keeps appearing:\n• Make sure the "js" folder sits next to index.html\n• Open index.html through a local server or refresh the page');
+        alert('⏳ The app script (js/app.js) has not loaded yet — buttons are inactive.\n\nIf this message keeps appearing:\n• Make sure the "js" folder sits next to index.html\n• Open index.html through a local server or refresh the page\n• On phones: clear the browser cache (old cached script) and reload');
       });
     }
   });
@@ -328,6 +328,6 @@ document.addEventListener('click', function (e) {
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="js/app.js?v=48" defer></script>
+<script src="js/app.js?v=49" defer></script>
 </body>
 </html>

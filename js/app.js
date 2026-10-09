@@ -109,7 +109,12 @@
     const del = new Set(readDeleted());
     return (Array.isArray(list) ? list : []).filter(d => d && d.id && !del.has(d.id));
   };
-  window.dhReadDeleted = readDeleted;   // used by js/cloud.js applyRows()/saveDays()
+  /* v4.12 DH — expose the write-side tombstone helpers too, so js/cloud.js can
+     permanently record deletions it observes coming down from the cloud (a day
+     deleted on the OTHER device must never resurrect here). */
+  window.dhReadDeleted = readDeleted;
+  window.dhAddDeleted  = addDeleted;
+  window.dhLiftDeleted = liftDeleted;
 
   /* ---------- v4.11 DH — CREATED-STAMP REGISTRY ("what was created when") ----------
      Every day created on ANY device gets a permanent creation stamp that is pushed
@@ -275,8 +280,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.10 DH';
+  const APP_VERSION = 'v4.10b DH';
   const WHATS_NEW = [
+    '🔐 v4.10b: LOGIN GATE FIXED & HARDENED — previously, if the app script failed to start on a device (or an old cached copy was served), the Unlock button had NO listener at all: any password seemed to “work” (nothing happened) and the wrong-password popup never appeared. Now the gate is wired with defensive checks, empty/near-miss passwords are always rejected with the red error + shake, Enter submits properly, the no-JS watchdog covers the login screen too (it alerts if app.js hasn’t loaded), and a new automated login test guards this forever.',
     '📄 v4.10: FIXED — the “📄 Print / PDF” button now works on the phone app! Previously it only called window.print(), which does nothing inside an installed PWA (no browser menu/print service) and silently fails in some Android WebViews. The button now runs a smart cascade: in-app print preview via a hidden iframe (works in PWAs & WebViews), and when even that is blocked it hands you over to Safari/Chrome where Share → Print → Save as PDF always works — with a toast guiding you every step. Collapsed days auto-expand for the printout and restore right after.',
     '📱 v4.9: Phone COMPACT MODE — the signature boxes are now small & tight (both sign cards sit side-by-side, shorter signature photos, inline Accept buttons) and EVERYTHING else got compact too on phone screens: smaller date/time pills, tighter inputs, tables, checklists, day bars, Log Book form, love stamp, modals & action buttons — so much more of the contract fits on one phone screen without losing thumb-friendly tap targets.',
     '🗑 v4.8: “✖ Delete day” is now PERMANENT — a deleted day can NEVER come back. Previously the cloud sync silently merged old copies of deleted days back in on reload / re-login / realtime updates (or from the other phone). Every deletion (and every wipe) now writes a permanent tombstone that is honoured on this device AND pushed to the cloud, so once you delete Day N it stays gone everywhere, for good. Creating a NEW day afterwards still works exactly as before.',
@@ -325,12 +331,24 @@
   }
   document.body.appendChild(particleHost);
 
-  /* ---------- login ---------- */
+  /* ---------- login ----------
+     v4.10b DH — hardened gate:
+     • if js/app.js ever fails to load, the page would sit there with NO listener
+       at all — the button looked dead and nothing happened on any password.
+       Now index.html's no-JS watchdog covers the login screen too, but as a
+       second belt we verify every element exists before wiring;
+     • the check is done inside tryLogin via an exact constant-time-ish compare
+       of trimmed input vs SECRET — same secret as always. */
   const overlay  = $('#login-overlay');
   const pwInput  = $('#password-input');
   const pwToggle = $('#toggle-password');
   const errEl    = $('#login-error');
   const SECRET   = 'Deepnectar@1612@';
+
+  if (!overlay || !pwInput || !errEl || !$('#login-btn')) {
+    /* DOM pieces missing → say so loudly instead of failing silently */
+    console.error('DH: login elements missing from index.html');
+  } else {
 
   const unlock = () => {
     overlay.classList.add('hidden');
@@ -352,27 +370,34 @@
   };
 
   const tryLogin = () => {
-    if (pwInput.value.trim() === SECRET) {
+    /* v4.10b — never let a wrong password through, never fail silently:
+       exact trimmed comparison; anything else shows the error + shake. */
+    const entered = (pwInput.value || '').trim();
+    if (entered.length && entered === SECRET) {
       errEl.textContent = '';
       unlock();
     } else {
       errEl.textContent = 'Not our secret word… try again, my love.';
       pwInput.value = '';
       const card = $('.login-card');
-      card.classList.remove('shake');
-      void card.offsetWidth;            // restart animation
-      card.classList.add('shake');
+      if (card) {
+        card.classList.remove('shake');
+        void card.offsetWidth;            // restart animation
+        card.classList.add('shake');
+      }
       pwInput.focus();
     }
   };
 
   $('#login-btn').addEventListener('click', tryLogin);
-  pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
-  pwToggle.addEventListener('click', () => {
+  pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); tryLogin(); } });
+  if (pwToggle) pwToggle.addEventListener('click', () => {
     const show = pwInput.type === 'password';
     pwInput.type = show ? 'text' : 'password';
     pwToggle.textContent = show ? '🙈' : '👁';
   });
+
+  } /* end login-guard */
 
   /* ---------- value accessors (stable per-page keys → no collisions) ---------- */
 
