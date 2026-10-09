@@ -139,6 +139,10 @@ setTimeout(() => {
       /* v4.6 · email snapshot: dhLogbookEmailRows returns EVERY filled Log Book
          column + per-sheet summaries + cloud status + link — read-only */
       const lbUpsertsBefore = lbUpserts.length, rowsBefore = JSON.stringify(lbRows);
+      /* v3.5: snapshot must AUTO-FILL empty LB columns from the day's own data
+         (debrief satisfaction / safeword / notes) even if the form was never touched */
+      const satBox = sec.querySelector('.score'); satBox.value = '9/10';
+      const swBox  = sec.querySelector('.sw');    swBox.value  = 'YELLOW';
       const emailRows = w.dhLogbookEmailRows(sec);
       const labels = emailRows.map(r => r.label);
       check('email snapshot returns LB rows', emailRows.length > 0 && labels.every(l => /^LB\b/.test(l)) && !labels.some(l => /Date \(from 2\.1\)/.test(l)));
@@ -156,6 +160,11 @@ setTimeout(() => {
         emailRows.some(r => /^LB cloud · /.test(r.label) && /sent from this affidavit/.test(r.value)));
       check('snapshot links to bdsmlogbook.vercel.app',
         emailRows.some(r => r.label === 'LB link' && r.value === 'https://bdsmlogbook.vercel.app/'));
+      /* v3.5: untouched LB columns are auto-filled from the day's own data */
+      const deb = emailRows.find(r => r.label === 'LB · 💞 Debrief · Debrief rating');
+      const safe = emailRows.find(r => r.label === 'LB · 💞 Debrief · Felt safe & loved?');
+      check('snapshot auto-fills debrief rating from satisfaction (9)', !!deb && deb.value === '9');
+      check('snapshot auto-fills felt-safe column from safeword (Yes)', !!safe && safe.value === 'Yes');
       check('email snapshot is READ-ONLY (no extra cloud writes)',
         lbUpserts.length === lbUpsertsBefore && JSON.stringify(lbRows) === rowsBefore);
 
