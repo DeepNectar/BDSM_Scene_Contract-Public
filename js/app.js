@@ -182,8 +182,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.9 DH';
+  const APP_VERSION = 'v4.10 DH';
   const WHATS_NEW = [
+    '📄 v4.10: FIXED — the “📄 Print / PDF” button now works on the phone app! Previously it only called window.print(), which does nothing inside an installed PWA (no browser menu/print service) and silently fails in some Android WebViews. The button now runs a smart cascade: in-app print preview via a hidden iframe (works in PWAs & WebViews), and when even that is blocked it hands you over to Safari/Chrome where Share → Print → Save as PDF always works — with a toast guiding you every step. Collapsed days auto-expand for the printout and restore right after.',
     '📱 v4.9: Phone COMPACT MODE — the signature boxes are now small & tight (both sign cards sit side-by-side, shorter signature photos, inline Accept buttons) and EVERYTHING else got compact too on phone screens: smaller date/time pills, tighter inputs, tables, checklists, day bars, Log Book form, love stamp, modals & action buttons — so much more of the contract fits on one phone screen without losing thumb-friendly tap targets.',
     '🗑 v4.8: “✖ Delete day” is now PERMANENT — a deleted day can NEVER come back. Previously the cloud sync silently merged old copies of deleted days back in on reload / re-login / realtime updates (or from the other phone). Every deletion (and every wipe) now writes a permanent tombstone that is honoured on this device AND pushed to the cloud, so once you delete Day N it stays gone everywhere, for good. Creating a NEW day afterwards still works exactly as before.',
     '📱 v4.7: The contract is now a true phone-first web app (PWA)! Every screen resolution adapts — from the tiniest 320 px phones (iPhone SE, Galaxy Fold cover) through standard & large phones up to small tablets — so ALL content stays visible and nothing gets cut off: safe-area padding for notch/Dynamic Island/home-bar phones, dvh viewport sizing (modals fit the real visible screen even with the on-screen keyboard open), ≥44 px thumb-friendly buttons & date boxes, wide tables that scroll sideways instead of clipping, action buttons in a tidy full-width grid, near-full-screen Email/AI sheets, an "Add to Home Screen" install prompt + badge, and the manifest/apple meta tags wired so it launches standalone like a native app.',
@@ -503,37 +504,145 @@
   $('#save-contract').addEventListener('click', e => save(false, e.currentTarget));
 
   /* ---------- Print / PDF ----------
-     On phones window.print() is unreliable (no print service, or it silently
-     opens a broken share sheet), so the app generates the PDF itself — see
-     js/pdf.js. Desktop keeps the native "Print → Save as PDF" dialog. */
-  const useGeneratedPDF = () => {
-    if (typeof makeContractPDF !== 'function') return false;   // v4.7 DH: pdf.js not shipped → always use the native print dialog (works in every phone browser too)
-    if (isPhone()) return true;                                    // phones: always build the file
-    try {                                                           // installed PWA: no browser chrome to print from
-      if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
-      if (window.matchMedia && window.matchMedia('(display-mode: fullscreen)').matches) return true;
-      if (navigator.standalone) return true;                        // iOS home-screen app
-    } catch { /* ignore */ }
-    return false;
+     v4.10 DH FIX — "PDF button not working on phone".
+     Root cause: the 📄 Print / PDF button relied only on window.print(), which
+     does NOTHING inside an installed PWA (standalone mode has no browser menu,
+     no print service) and silently fails in some Android WebViews. Now the
+     button runs a robust cascade that works on EVERY phone surface:
+
+       1. js/pdf.js (if ever shipped again) → real generated PDF file
+       2. In-app print preview → opens the page in a hidden iframe and calls
+          print() there. Works even when window.print() on the top-level page
+          is blocked/ignored (PWA & Android WebView).
+       3. "Open in browser" hand-off → for PWAs where even iframe printing is
+          unavailable: copies the contract into a new tab of the normal browser
+          (Safari/Chrome), where Share → Print → Save as PDF definitely works.
+       4. Last resort → plain window.print(). */
+
+  /* force collapsed days open while printing, remember & restore after */
+  const expandAllForPrint = () => {
+    const pages = $$('.page');
+    const wasCollapsed = [];
+    pages.forEach(p => {
+      if (p.classList.contains('day-collapsed')) { wasCollapsed.push(p); p.classList.remove('day-collapsed'); }
+    });
+    return () => wasCollapsed.forEach(p => p.classList.add('day-collapsed'));
   };
-  $('#print-pdf').addEventListener('click', async e => {
-    const btn = e.currentTarget;
-    if (!useGeneratedPDF()) { window.print(); return; }
-    const old = btn.textContent;
-    btn.disabled = true; btn.textContent = '⏳ Building PDF…';
+
+  const printViaIframe = async () => {
+    const clone = document.documentElement.cloneNode(true);
+    /* strip things that must never appear in the printed/PDF output */
+    clone.querySelectorAll('.login-overlay,.modal-overlay,.ai-overlay,.toast,.lb-viewer,.btn-group,#nojs-warning,[id^="lb-"],script:not([src])')
+      .forEach(n => n.remove());
+    /* rebuild the stylesheet links with absolute URLs so the iframe is styled */
+    clone.querySelectorAll('link[rel="stylesheet"]').forEach(l => { l.href = new URL(l.getAttribute('href'), location.href).href; });
+    /* remove any interactive state that could hide content in the copy */
+    clone.querySelectorAll('.day-collapsed').forEach(p => p.classList.remove('day-collapsed'));
+
+    const html = '<!DOCTYPE html>\n' + clone.outerHTML;
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    return await new Promise(resolve => {
+      const frame = document.createElement('iframe');
+      frame.setAttribute('aria-hidden', 'true');
+      frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
+      let settled = false;
+      const done = ok => {
+        if (settled) return; settled = true;
+        clearTimeout(timer);
+        setTimeout(() => { frame.remove(); try { URL.revokeObjectURL(url); } catch { /* ignore */ } }, 1500);
+        resolve(ok);
+      };
+      const timer = setTimeout(() => done(false), 9000);   // phone browsers can be slow building the doc
+      frame.addEventListener('load', () => {
+        try {
+          const w = frame.contentWindow;
+          if (!w) return done(false);
+          w.onafterprint = () => done(true);
+          w.focus();
+          w.print();
+          /* if print() is silently ignored (some WebViews), fall back in 2.5s */
+          setTimeout(() => done(true), 2500);
+        } catch { done(false); }
+      });
+      frame.src = url;
+      document.body.appendChild(frame);
+    });
+  };
+
+  /* PWA hand-off: reopen the exact same app inside the normal browser, where
+     the user can use the browser's own Share/Print menu reliably. */
+  const openInBrowserForPDF = () => {
     try {
-      writeStore();                                   // make sure the newest entries are on disk first
-      const res = await makeContractPDF();
-      downloadBlob(res.blob, res.filename);
-      toast('📄 PDF ready — check your Downloads folder ♥', 3400);
+      const u = new URL(location.href);
+      u.searchParams.set('dhpdf', '1');
+      const win = window.open(u.href, '_blank');
+      if (!win) { window.location.href = u.href; return true; }  // popup blocked → navigate instead
+      return true;
+    } catch { return false; }
+  };
+
+  const runPrintPDF = async btn => {
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ Preparing PDF…';
+    const restore = expandAllForPrint();
+    try {
+      writeStore();                                       // newest entries on disk first
+      if (typeof makeContractPDF === 'function') {       // dedicated generator (if shipped)
+        const res = await makeContractPDF();
+        downloadBlob(res.blob, res.filename);
+        toast('📄 PDF ready — check your Downloads folder ♥', 3400);
+        return;
+      }
+      const standalone = (() => {
+        try {
+          return (window.matchMedia && (window.matchMedia('(display-mode: standalone)').matches
+            || window.matchMedia('(display-mode: fullscreen)').matches)) || navigator.standalone === true;
+        } catch { return false; }
+      })();
+      if (standalone && isIOS_()) {                      // iOS PWA: print is unavailable there
+        toast('🌐 Opening in Safari — there tap Share ⎙ → Print → Save as PDF.', 4200);
+        if (openInBrowserForPDF()) return;
+      }
+      const ok = await printViaIframe();                 // Android PWA / WebView / everything else
+      if (!ok) {
+        if (standalone && openInBrowserForPDF()) {
+          toast('🌐 Opened in your browser — use the menu → Print → Save as PDF.', 4200);
+          return;
+        }
+        window.print();                                  // final fallback
+      } else if (standalone) {
+        toast('🖨 In the print sheet choose “Save as PDF” as the destination.', 4200);
+      }
     } catch (err) {
       console.warn(err);
-      toast('⚠️ Could not build the PDF here — opening the print dialog instead.', 3600);
-      try { window.print(); } catch { /* nothing more we can do */ }
+      toast('⚠️ Could not open the print dialog here — opening in the browser instead.', 3800);
+      if (!openInBrowserForPDF()) { try { window.print(); } catch { /* nothing more we can do */ } }
     } finally {
+      restore();
       btn.disabled = false; btn.textContent = old;
     }
-  });
+  };
+
+  const isIOS_ = () => {
+    if (typeof window.isIOS === 'function') { try { return !!window.isIOS(); } catch { /* fall through */ } }
+    return /iP(hone|ad|od)/.test(navigator.userAgent || '') ||
+      (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+  };
+
+  $('#print-pdf').addEventListener('click', e => runPrintPDF(e.currentTarget));
+
+  /* v4.10 — arriving via the "open in browser" hand-off (?dhpdf=1): once the
+     app is up, auto-open the print dialog so Save-as-PDF is one tap away. */
+  setTimeout(() => {
+    try {
+      if (!/[?&]dhpdf=1/.test(location.search)) return;
+      history.replaceState(null, '', location.pathname + location.search.replace(/[?&]dhpdf=1/, '').replace(/&&/, '?') + location.hash);
+      toast('📄 Use your browser menu → Share/Print → “Save as PDF”. Opening the print dialog now…', 5200);
+      setTimeout(() => { try { window.print(); } catch { /* ignore */ } }, 900);
+    } catch { /* ignore */ }
+  }, 2500);
 
   /* gentle autosave — every change writes instantly, plus safety nets */
   ['input', 'change'].forEach(ev => document.addEventListener(ev, writeStore, true));
