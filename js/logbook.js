@@ -234,16 +234,41 @@
     return pulling;
   };
 
-  /* upsert ONE sheet row into the log book's original cloud */
+  /* upsert ONE sheet row into the log book's original cloud.
+     v3.3 FIX ("⚠️ Could not reach the Log Book cloud"): PostgREST needs an
+     explicit `?on_conflict=sheet_name` query param for merge-duplicates —
+     without it the POST hit the sheet_name unique constraint and returned
+     HTTP 409, which surfaced as the "could not reach" error. The write now
+     tries POST-upsert first and transparently falls back to PATCH (update
+     the existing row) or INSERT (only when the row is truly missing), so a
+     stale/blank mirror can never wipe another day's stored rows. */
+  const writeJson = (path, method, body, prefer) => {
+    const h = lbHeaders();
+    if (prefer) h['Prefer'] = prefer;
+    return fetch(`${LB_REST}${path}`, { method, headers: h, body: JSON.stringify(body) });
+  };
+
   const upsertSheet = async (name, html) => {
-    const res = await fetch(`${LB_REST}/log_book_data`, {
-      method: 'POST',
-      headers: lbHeaders(),
-      body: JSON.stringify({ sheet_name: name, html_content: html })
-    });
+    let res = await writeJson('/log_book_data?on_conflict=sheet_name', 'POST',
+      { sheet_name: name, html_content: html },
+      'resolution=merge-duplicates,return=minimal');
     if (!res.ok && res.status !== 201 && res.status !== 204) {
       const txt = await res.text().catch(() => '');
-      throw new Error('logbook cloud write HTTP ' + res.status + ' ' + txt.slice(0, 120));
+      // 409/23505 → conflict target not honoured; 404 → row may be missing.
+      // Try a targeted PATCH first (never overwrites other days' data).
+      res = await writeJson(`/log_book_data?sheet_name=eq.${encodeURIComponent(name)}`,
+        'PATCH', { html_content: html }, 'return=minimal');
+      if (!res.ok && res.status !== 204) {
+        const txt2 = await res.text().catch(() => '');
+        // If nothing was updated (row absent), plain INSERT creates it.
+        res = await writeJson('/log_book_data', 'POST',
+          { sheet_name: name, html_content: html }, 'return=minimal');
+        if (!res.ok && res.status !== 201 && res.status !== 204) {
+          const txt3 = await res.text().catch(() => '');
+          throw new Error('logbook cloud write HTTP ' + res.status +
+            ' ' + (txt3 || txt2 || txt).slice(0, 120));
+        }
+      }
     }
     latest[name] = { html, ts: Date.now() };
     persistMirror();
