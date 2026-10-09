@@ -64,6 +64,8 @@ sec.innerHTML = `
     <div class="full"><label>Debrief notes</label> <textarea class="note-box"></textarea></div>
   </div>
   <div class="sign-row"><div class="sign-field"><label>Honey's signature (debrief)</label><input type="text"></div><div class="sign-field"><label>Date</label>${dmyPill()}</div></div>
+  <h3 class="section-title">Article 8 · Aftercare &amp; Closing Rituals</h3>
+  <p>Aftercare clause body…</p>
   <div class="love-stamp"><img src="img/love-stamp.png" alt="stamp"></div>`;
 w.document.querySelector('#main-contract') ? w.document.querySelector('#main-contract').appendChild(sec) : w.document.body.appendChild(sec);
 
@@ -102,7 +104,11 @@ setTimeout(() => {
   dd.value = '9'; mm.value = '10'; yy.value = '2026';
   const setF = (sheet, col, val) => {
     const lab = form.querySelector(`label[data-sheet="${sheet}"][data-col="${col}"]`);
-    const ctl = lab.querySelector('.lb-fld-ctl > *');
+    /* v3.1: no child combinators (`>`) — jsdom's CSS engine doesn't support
+       them; walk the .lb-fld-ctl wrapper's first element child instead. */
+    const wrap = lab && lab.querySelector('.lb-fld-ctl');
+    const ctl = wrap ? wrap.firstElementChild : null;
+    if (!ctl) throw new Error(`no control for ${sheet}/${col}`);
     ctl.value = val;
     ctl.dispatchEvent(new w.Event('input', { bubbles: true }));
   };
