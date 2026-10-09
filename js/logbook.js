@@ -696,7 +696,16 @@
         if (!ctl) return;
         if (ctl.tagName === 'SELECT') {
           const want = String(val).trim().toLowerCase();
-          Array.from(ctl.options).forEach(o => { if (o.value.toLowerCase() === want) ctl.value = o.value; });
+          let hit = false;
+          Array.from(ctl.options).forEach(o => { if (o.value.toLowerCase() === want) { ctl.value = o.value; hit = true; } });
+          /* v3.5: the log book's own dropdowns may not carry the exact word
+             (e.g. "YELLOW" / free text) — add it as a real option so no data
+             is ever silently dropped from the form or the email export. */
+          if (!hit && !ctl.querySelector(`option[value=\"\"]`) == false && val !== '') {
+            const o = document.createElement('option');
+            o.value = String(val).trim(); o.textContent = o.value;
+            ctl.appendChild(o); ctl.value = o.value;
+          }
         } else {
           ctl.value = String(val).trim();
         }
@@ -1030,7 +1039,13 @@
 
     const form = pageEl.querySelector('.lb-form');
     if (form) {
-      /* every filled field, grouped by sheet, in Date → col order */
+      /* v3.5: ALWAYS fill every empty Log Book field from this day's
+         Day-section / Affidavit data first (same mapper used by 💾 Save),
+         then export — so the email carries ALL important data of every
+         column, even when the user never touched the pre-scene form. */
+      try { fillFormFromAffidavit(pageEl, form); } catch { /* best effort */ }
+
+      /* every field (filled or mirrored), grouped by sheet, Date → col order */
       $$('label.lb-fld[data-sheet]', form).forEach(lab => {
         const ctl = ctlOf(lab);
         const val = ((ctl && ctl.value) || '').trim();
