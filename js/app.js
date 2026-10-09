@@ -606,7 +606,6 @@
             }
           } catch { /* keep the static skeleton if swap fails */ }
         }
-        continue;   // v4.11 DH — fall through to the badge guard below
       }
       const tpl = document.createElement('template');
       tpl.innerHTML = String(d.html).trim();
