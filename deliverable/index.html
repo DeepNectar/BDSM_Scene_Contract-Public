@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#2a1c16">
+<title>Deep &amp; Honey · Eternal Contract</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/supabase-config.js" defer></script>
+<script src="js/cloud.js?v=42" defer></script>
+</head>
+<body>
+
+<!-- v3.2 DH — no-JS safety net: if js/app.js fails to load (or is still loading),
+     the toolbar buttons would look dead. This gives instant, clear feedback and
+     auto-retries revealing the real handlers once app.js is ready. -->
+<script>
+window.__dhReady = false;
+setTimeout(function () {
+  if (window.__dhReady) return;
+  ['email-contract', 'ai-assistant'].forEach(function (id) {
+    var b = document.getElementById(id);
+    if (b && !b.dataset.dhFallback) {
+      b.dataset.dhFallback = '1';
+      b.addEventListener('click', function () {
+        alert('⏳ The app script (js/app.js) has not loaded yet.\n\nIf this message keeps appearing:\n• Make sure the "js" folder sits next to index.html\n• Open index.html through a local server or refresh the page');
+      });
+    }
+  });
+}, 4000);
+document.addEventListener('click', function (e) {
+  var del = e.target.closest ? e.target.closest('.delete-day-btn') : null;
+  if (!del) return;
+  var btn = del;
+  setTimeout(function () {
+    var p = document.getElementById(btn.dataset.day);
+    if (p && document.body.contains(btn)) {
+      alert('⏳ Delete could not run — js/app.js is not active yet. Please refresh the page.');
+    }
+  }, 300);
+}, true);
+</script>
+
+<!-- ==================== LOGIN OVERLAY ==================== -->
+<div class="login-overlay" id="login-overlay">
+  <div class="login-card" role="dialog" aria-labelledby="login-title">
+    <div class="login-heart">♥</div>
+    <h2 id="login-title">A Contract of Trust</h2>
+    <p class="login-sub">Between Deep &amp; Honey · written for infinity</p>
+    <label for="password-input">Enter our secret word</label>
+    <div class="password-wrapper">
+      <input type="password" id="password-input" placeholder="••••••••" autocomplete="current-password">
+      <button class="toggle-eye" id="toggle-password" type="button" aria-label="Show password">👁</button>
+    </div>
+    <p class="hint">Hint: pet name @ date &amp; month we met @</p>
+    <button class="btn btn-primary login-btn" id="login-btn" type="button">Unlock our contract ♥</button>
+    <p class="login-error" id="login-error" role="alert"></p>
+  </div>
+</div>
+
+<!-- ==================== EMAIL MODAL ==================== -->
+<div class="modal-overlay" id="email-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="modal-title">✉ Email Contract Data</h3>
+      <button class="modal-close" id="modal-close-btn" type="button" aria-label="Close dialog">×</button>
+    </div>
+    <div class="modal-tabs" role="tablist">
+      <button class="active" data-format="plain" type="button" role="tab" aria-selected="true">Plain Text</button>
+      <button data-format="html" type="button" role="tab" aria-selected="false">HTML Format</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" id="modal-copy-btn" type="button">📋 Copy</button>
+      <button class="btn btn-primary" id="modal-email-btn" type="button">✉ Send Email</button>
+      <button class="btn btn-ghost" id="modal-close-footer-btn" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== AI ASSISTANT MODAL ==================== -->
+<div class="ai-overlay" id="ai-modal" role="dialog" aria-modal="true" aria-labelledby="ai-title">
+  <div class="ai-card">
+    <div class="ai-header">
+      <h3 id="ai-title">✨ AI Assistant — write our day</h3>
+      <button class="ai-close" id="ai-close-btn" type="button" aria-label="Close dialog">×</button>
+    </div>
+    <div class="ai-body">
+      <div class="ai-block">
+        <label for="ai-day-select">Target day</label>
+        <select id="ai-day-select" class="ai-field"></select>
+      </div>
+      <div class="ai-block">
+        <label>💞 Couple type — how do you two play together?</label>
+        <div class="ai-chips" id="ai-couple-chips" role="group">
+          <button class="ai-chip active" data-couple="romantic" type="button">🌹 Romantic lovers</button>
+          <button class="ai-chip" data-couple="spicy" type="button">🌶️ Spicy &amp; naughty</button>
+          <button class="ai-chip" data-couple="vanilla" type="button">🍦 Soft vanilla-sweet</button>
+          <button class="ai-chip" data-couple="brat" type="button">😜 Brat tamer &amp; brat</button>
+          <button class="ai-chip" data-couple="service" type="button">🕯️ Service &amp; devotion</button>
+          <button class="ai-chip" data-couple="transition" type="button">🌱 New / transitioning D/s</button>
+          <button class="ai-chip" data-couple="longdistance" type="button">✈️ Long-distance / weekend reunion</button>
+          <button class="ai-chip" data-couple="experienced" type="button">⛓️ Experienced kinksters</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label>What should the AI do?</label>
+        <div class="ai-chips" id="ai-mode-chips" role="group">
+          <button class="ai-chip active" data-mode="create" type="button">🆕 Create a new day</button>
+          <button class="ai-chip" data-mode="write" type="button">✍️ Write into an existing day</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label>Mood &amp; tone of the day ♥</label>
+        <div class="ai-chips" id="ai-mood-chips" role="group">
+          <button class="ai-chip active" data-mood="romantic" type="button">🌹 Romantic</button>
+          <button class="ai-chip" data-mood="spicy" type="button">🌶️ Spicy</button>
+          <button class="ai-chip" data-mood="playful" type="button">😈 Playful</button>
+          <button class="ai-chip" data-mood="intense" type="button">⛓️ Intense</button>
+          <button class="ai-chip" data-mood="tender" type="button">🕊️ Tender</button>
+          <button class="ai-chip" data-mood="slowburn" type="button">🔥 Slow burn</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label>Intensity level</label>
+        <div class="ai-chips" id="ai-intensity-chips" role="group">
+          <button class="ai-chip" data-intensity="soft" type="button">Soft &amp; gentle</button>
+          <button class="ai-chip active" data-intensity="medium" type="button">Medium</button>
+          <button class="ai-chip" data-intensity="firm" type="button">Firm</button>
+          <button class="ai-chip" data-intensity="deepend" type="button">Deep end</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label>Who leads today?</label>
+        <div class="ai-chips" id="ai-lead-chips" role="group">
+          <button class="ai-chip active" data-lead="Deep" type="button">Deep · Dominant</button>
+          <button class="ai-chip" data-lead="Honey" type="button">Honey · Submissive</button>
+          <button class="ai-chip" data-lead="Both" type="button">Shared / switch</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label>Setting / venue</label>
+        <div class="ai-chips" id="ai-venue-chips" role="group">
+          <button class="ai-chip active" data-venue="bedroom" type="button">🛏 Private bedroom</button>
+          <button class="ai-chip" data-venue="playroom" type="button">🕯 Play room / dungeon corner</button>
+          <button class="ai-chip" data-venue="bathroom" type="button">🛁 Bath / shower scene</button>
+          <button class="ai-chip" data-venue="outdoor" type="button">🌙 Balcony / secluded outdoor</button>
+          <button class="ai-chip" data-venue="anywhere" type="button">✨ Surprise us</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label>Play categories &amp; subcategories — tap any that call to you two ♥</label>
+        <div class="ai-cat-group"><span class="ai-cat-label">Mind &amp; senses</span><div class="ai-chips ai-subchips" data-cat="senses" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Bondage &amp; restraint</span><div class="ai-chips ai-subchips" data-cat="bondage" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Sensation &amp; impact</span><div class="ai-chips ai-subchips" data-cat="sensation" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Power &amp; protocol</span><div class="ai-chips ai-subchips" data-cat="power" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Intimacy &amp; pleasure</span><div class="ai-chips ai-subchips" data-cat="intimacy" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Roleplay &amp; fetish</span><div class="ai-chips ai-subchips" data-cat="roleplay" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Service &amp; ritual</span><div class="ai-chips ai-subchips" data-cat="service" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Scene extras</span><div class="ai-chips ai-subchips" data-cat="extras" role="group"></div></div>
+        <div class="ai-cat-group"><span class="ai-cat-label">Care &amp; closure</span><div class="ai-chips ai-subchips" data-cat="care" role="group"></div></div>
+        <div class="ai-chips" style="margin-top:8px">
+          <button class="ai-chip ai-chip-mini" id="ai-select-all" type="button">☑ Pick a curated full scene</button>
+          <button class="ai-chip ai-chip-mini" id="ai-clear-all" type="button">✖ Clear selections</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label for="ai-duration">Planned duration</label>
+        <input id="ai-duration" class="ai-field" type="text" placeholder="e.g. 60 minutes + aftercare">
+      </div>
+      <div class="ai-block">
+        <label for="ai-aftercare">Aftercare focus</label>
+        <div class="ai-chips" id="ai-aftercare-chips" role="group">
+          <button class="ai-chip active" data-care="cuddle" type="button">🤍 Cuddles &amp; warmth</button>
+          <button class="ai-chip" data-care="massage" type="button">💆 Massage</button>
+          <button class="ai-chip" data-care="praise" type="button">💬 Praise &amp; reassurance</button>
+          <button class="ai-chip" data-care="treats" type="button">🍫 Tea, snacks &amp; hydration</button>
+          <button class="ai-chip" data-care="quiet" type="button">🌙 Quiet presence</button>
+          <button class="ai-chip" data-care="words" type="button">📝 Talking / debrief</button>
+        </div>
+      </div>
+      <div class="ai-block">
+        <label for="ai-special-sub">Special request — Honey (Submissive) 💞</label>
+        <input id="ai-special-sub" class="ai-field" type="text" placeholder="e.g. extra teasing and edging tonight…">
+      </div>
+      <div class="ai-block">
+        <label for="ai-special-dom">Special request — Deep (Dominant) 💞</label>
+        <input id="ai-special-dom" class="ai-field" type="text" placeholder="e.g. slow ice trails across her spine…">
+      </div>
+      <div class="ai-block">
+        <label for="ai-limits">Extra hard / soft limits to honour (optional)</label>
+        <textarea id="ai-limits" class="ai-field" rows="2" placeholder="Anything strictly off the table tonight…"></textarea>
+      </div>
+      <div class="ai-block">
+        <label for="ai-notes">Extra notes (optional)</label>
+        <textarea id="ai-notes" class="ai-field" rows="2" placeholder="Anything specific you two want woven in…"></textarea>
+      </div>
+      <div class="ai-block">
+        <label>Preview</label>
+        <div class="ai-preview" id="ai-preview"><span class="muted">Choose your options above and press “Generate” to see what the AI would write, then apply it with “Create day” / “Write into day”.</span></div>
+      </div>
+    </div>
+    <div class="ai-footer">
+      <button class="btn btn-outline" id="ai-generate-btn" type="button">🪄 Generate</button>
+      <button class="btn btn-primary" id="ai-apply-btn" type="button" disabled>✨ Create day</button>
+      <button class="btn btn-ghost" id="ai-close-footer-btn" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MAIN CONTRACT ==================== -->
+<main class="contract-container" id="main-contract">
+
+  <!-- HEADER -->
+  <header class="contract-header">
+    <!-- Soulmate code logo — Drive ref: https://drive.google.com/file/d/17_Wt5nHtKbuDc7DiynDexI-l-GY8RpgS/view?usp=sharing (local copy; hotlinked Drive /view URLs are blocked by browsers/email/print) -->
+    <img class="header-logo" width="200" height="200" alt="Soulmate code logo"
+         src="img/soulmate-logo.png">
+    <p class="brand-name">Soulmate Code</p>
+    <!-- v2.4 DH — app version badge shown on the home screen; keep in sync with APP_VERSION in js/app.js -->
+    <button class="version-badge" id="version-badge" type="button" title="Tap to see what's new in this version">v2.4 DH ♥</button>
+    <span id="cloud-status" class="cloud-status" title="Checking cloud…">☁️ Connecting to Supabase…</span>
+    <h1>BDSM Scene-Specific Contract</h1>
+    <p class="tagline">Two hearts · one bond · an agreement written in trust and tenderness</p>
+    <div class="sub">
+      <span>📄 Contract No. <strong>#DH-2026-∞</strong></span>
+      <span>📅 Effective Date
+        <span class="datetime-group"><input type="text" inputmode="numeric" maxlength="2" placeholder="DD" aria-label="Day"><i>/</i><input type="text" inputmode="numeric" maxlength="2" placeholder="MM" aria-label="Month"><i>/</i><input type="text" inputmode="numeric" maxlength="4" placeholder="YYYY" aria-label="Year"></span>
+      </span>
+      <span>💞 Parties · <strong>Honey</strong> (Sub) &amp; <strong>Deep</strong> (Dom)</span>
+    </div>
+
+    <div class="seal">
+      <p class="seal-title">✦&ensp;Seal this contract with your signature&ensp;✦</p>
+      <div class="sig-cards">
+        <div class="sig-card" data-area="seal" data-party="Deep">
+          <!-- Sign image: https://drive.google.com/file/d/1KnoE8uWAwugB0PRMiPmq32eCW-ZxMasj/view?usp=sharing (kept exactly as provided, local copy) -->
+          <img class="sig-photo" src="img/signature-deep.png" alt="Deep's signature" loading="lazy">
+          <span class="sig-name">Deep · Dominant</span>
+          <span class="sig-status">Awaiting acceptance…</span>
+          <button class="accept-btn" data-area="seal" data-party="Deep" type="button">Accept</button>
+        </div>
+        <div class="sig-card" data-area="seal" data-party="Honey">
+          <!-- Sign image: https://drive.google.com/file/d/1HRoqjVvSDswlROnookv0ykGagHwLQ6FI/view?usp=sharing (kept exactly as provided, local copy) -->
+          <img class="sig-photo" src="img/signature-honey.png" alt="Honey's signature" loading="lazy">
+          <span class="sig-name">Honey · Submissive</span>
+          <span class="sig-status">Awaiting acceptance…</span>
+          <button class="accept-btn" data-area="seal" data-party="Honey" type="button">Accept</button>
+        </div>
+      </div>
+    </div>
+  </header>
+  <!-- All day pages cleared by request — create new days with the ✨ AI Assistant button above. -->
+
+  <!-- ==================== SUMMARY ==================== -->
+  <section class="page" id="summary">
+    <div class="page-head"><h2>Summary — What To Do &amp; What Never To Do</h2></div>
+
+    <div class="dos-donts">
+      <div class="do-card">
+        <h4>✅ Do</h4>
+        <ul>
+          <li>Complete pre-scene preparation together, out loud.</li>
+          <li>Confirm safewords before every scene.</li>
+          <li>Follow the “Contrast &amp; Control” protocol.</li>
+          <li>Treat aftercare as mandatory, generous, and unhurried.</li>
+        </ul>
+      </div>
+      <div class="dont-card">
+        <h4>❌ Don't</h4>
+        <ul>
+          <li>Introduce new, unvetted activities.</li>
+          <li>Violate a hard limit — ever.</li>
+          <li>Skip or shorten aftercare.</li>
+          <li>Ignore a safeword, verbal or non-verbal.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 class="section-title">Chronological Guide — Day 1</h3>
+    <table>
+      <tr><th>Time</th><th>Step / action</th><th>Who</th><th>Notes</th></tr>
+      <tr><td>T−60 min</td><td>Hydrate, prepare space, lock door, lay out toys</td><td>Both</td><td>Comfort &amp; safety</td></tr>
+      <tr><td>T−10 min</td><td>Pre-scene affidavit read aloud</td><td>Both</td><td>Critical</td></tr>
+      <tr><td>T+0</td><td>Restraint — blindfold, silk ties or handcuffs</td><td>Deep</td><td>Never both on one limb</td></tr>
+      <tr><td>T+10</td><td>Ice trails — moving motion only</td><td>Deep</td><td>Respect hard limits</td></tr>
+      <tr><td>T+20</td><td>Clamps applied + 10-min timer</td><td>Deep</td><td>Remove on alarm</td></tr>
+      <tr><td>T+20–30</td><td>Teasing &amp; edging (vibrator low, first half)</td><td>Deep</td><td>Honey's request</td></tr>
+      <tr><td>T+30</td><td>Remove clamps; continue toward climax</td><td>Both</td><td>Peak</td></tr>
+      <tr><td>T+75</td><td>Scene ends; aftercare begins</td><td>Both</td><td>Mandatory</td></tr>
+    </table>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="footer-note">
+    <p class="confidential"><strong>Confidentiality notice:</strong> this document is strictly private between Deep &amp; Honey. Any unauthorised disclosure is prohibited.</p>
+    <p>Safewords: RED · YELLOW · GREEN · Non-verbal: dropped object</p>
+  </footer>
+
+  <!-- ACTIONS -->
+  <div class="btn-group">
+    <button class="btn btn-outline" id="save-contract" type="button">💾 Save</button>
+    <button class="btn btn-primary" id="print-pdf" type="button">📄 Print / PDF</button>
+    <button class="btn btn-outline" id="email-contract" type="button">✉ Email data</button>
+    <button class="btn btn-outline" id="ai-assistant" type="button">✨ AI write a day</button>
+  </div>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="js/app.js?v=42" defer></script>
+</body>
+</html>
