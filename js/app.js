@@ -182,8 +182,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.8 DH';
+  const APP_VERSION = 'v4.9 DH';
   const WHATS_NEW = [
+    '📱 v4.9: Phone COMPACT MODE — the signature boxes are now small & tight (both sign cards sit side-by-side, shorter signature photos, inline Accept buttons) and EVERYTHING else got compact too on phone screens: smaller date/time pills, tighter inputs, tables, checklists, day bars, Log Book form, love stamp, modals & action buttons — so much more of the contract fits on one phone screen without losing thumb-friendly tap targets.',
     '🗑 v4.8: “✖ Delete day” is now PERMANENT — a deleted day can NEVER come back. Previously the cloud sync silently merged old copies of deleted days back in on reload / re-login / realtime updates (or from the other phone). Every deletion (and every wipe) now writes a permanent tombstone that is honoured on this device AND pushed to the cloud, so once you delete Day N it stays gone everywhere, for good. Creating a NEW day afterwards still works exactly as before.',
     '📱 v4.7: The contract is now a true phone-first web app (PWA)! Every screen resolution adapts — from the tiniest 320 px phones (iPhone SE, Galaxy Fold cover) through standard & large phones up to small tablets — so ALL content stays visible and nothing gets cut off: safe-area padding for notch/Dynamic Island/home-bar phones, dvh viewport sizing (modals fit the real visible screen even with the on-screen keyboard open), ≥44 px thumb-friendly buttons & date boxes, wide tables that scroll sideways instead of clipping, action buttons in a tidy full-width grid, near-full-screen Email/AI sheets, an "Add to Home Screen" install prompt + badge, and the manifest/apple meta tags wired so it launches standalone like a native app.',
     '💌 v4.6: The HTML email export now carries ALL THREE blocks for every finished day — “Day Section”, “Pre-Scene Execution Affidavit” AND the complete “📔 BDSM Log Book — Pre-Scene entries”: every data column of all eight Log Book sheets (Date, Mood, Followed rules, Duration, Activities, Safe word, Rating, Aftercare, Toys used, Bonus, Dominant journal, Debrief, both Feedback sheets), plus a per-sheet overview table, the cloud status for that date and a one-tap link to bdsmlogbook.vercel.app. The email only READS the on-page form — your entries still live in the Log Book’s original cloud alone.',
@@ -1592,6 +1593,9 @@
   /* ---------- HTML builders for a brand-new day page ---------- */
   const dmyPill = () =>
     `<span class="datetime-group"><input type="text" inputmode="numeric" maxlength="2" placeholder="DD"><i>/</i><input type="text" inputmode="numeric" maxlength="2" placeholder="MM"><i>/</i><input type="text" inputmode="numeric" maxlength="4" placeholder="YYYY"></span>`;
+  /* v4.9 DH — compact date pill for signature fields (no DD/MM/YYYY labels, tighter) */
+  const dmyPillCompact = () =>
+    `<span class="datetime-group datetime-compact"><input type="text" inputmode="numeric" maxlength="2" placeholder="DD" aria-label="Day"><i>/</i><input type="text" inputmode="numeric" maxlength="2" placeholder="MM" aria-label="Month"><i>/</i><input type="text" inputmode="numeric" maxlength="4" placeholder="YYYY" aria-label="Year"></span>`;
   const ynPair  = (a, b) => `<label class="yn"><input type="checkbox"> ${a}</label><label class="yn"><input type="checkbox"> ${b}</label>`;
 
   const dayPageHTML = p => {
@@ -1703,12 +1707,12 @@
       <div class="sign-row">
         <div class="sign-field"><label>Submissive / Bottom — signature</label><span class="initials-slot" data-area="signatories-day${N}" data-party="Honey"><input type="text" class="editable-field" placeholder="Signature"></span></div>
         <div class="sign-field"><label>Printed name</label><input class="editable-field" placeholder="Type printed name"></div>
-        <div class="sign-field"><label>Date</label>${dmyPill()}</div>
+        <div class="sign-field"><label>Date</label>${dmyPillCompact()}</div>
       </div>
       <div class="sign-row">
         <div class="sign-field"><label>Dominant / Top — signature</label><span class="initials-slot" data-area="signatories-day${N}" data-party="Deep"><input type="text" class="editable-field" placeholder="Signature"></span></div>
         <div class="sign-field"><label>Printed name</label><input class="editable-field" placeholder="Type printed name"></div>
-        <div class="sign-field"><label>Date</label>${dmyPill()}</div>
+        <div class="sign-field"><label>Date</label>${dmyPillCompact()}</div>
       </div>
 
       <h3 class="section-title">Pre-Scene Execution Affidavit — Day ${N}</h3>
@@ -1730,11 +1734,11 @@
       </div>
       <div class="sign-row">
         <div class="sign-field"><label>Deep's signature (debrief)</label><span class="initials-slot" data-area="debrief-day${N}" data-party="Deep"><input type="text" class="editable-field" placeholder="Signature"></span></div>
-        <div class="sign-field"><label>Date</label>${dmyPill()}</div>
+        <div class="sign-field"><label>Date</label>${dmyPillCompact()}</div>
       </div>
       <div class="sign-row">
         <div class="sign-field"><label>Honey's signature (debrief)</label><span class="initials-slot" data-area="debrief-day${N}" data-party="Honey"><input type="text" class="editable-field" placeholder="Signature"></span></div>
-        <div class="sign-field"><label>Date</label>${dmyPill()}</div>
+        <div class="sign-field"><label>Date</label>${dmyPillCompact()}</div>
       </div>
 
       <!-- Our love stamp — Drive ref: https://drive.google.com/file/d/1xT4SnUR8dtEHP14MUMFZnYZnumAS96Fw/view?usp=sharing (local copy) -->
