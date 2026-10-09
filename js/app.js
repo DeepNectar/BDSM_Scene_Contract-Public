@@ -79,13 +79,23 @@
   /* ---------- inline text inputs: grow to fit their text, stay compact ---------- */
   const GROW_FONT = '15px "Cormorant Garamond", Georgia, serif';
   const measureCanvas = document.createElement('canvas');
-  const mctx = measureCanvas.getContext('2d');
+  /* v4.2 DH — jsdom (and some privacy-mode browsers) return null from
+     getContext('2d'). A null mctx used to throw "Cannot set properties of
+     null (setting 'font')" inside applyFieldData → loadSaved → the login
+     replay, which ABORTED day restoration right after re-login. Guard it:
+     width measurement is cosmetic; data restore must never depend on it. */
+  const mctx = (() => { try { return measureCanvas.getContext('2d'); } catch { return null; } })();
   const growInput = inp => {
     if (!inp || inp.dataset.pill === '1') return;             // DD/MM/YYYY pills keep fixed size
     const min = parseFloat(getComputedStyle(inp).minWidth) || 70;
     const max = parseFloat(inp.dataset.growMax || '340');
-    mctx.font = getComputedStyle(inp).font || GROW_FONT;
-    const w = Math.ceil(mctx.measureText(inp.value || inp.placeholder || '').width) + 26;
+    let w = max;
+    if (mctx) {
+      try {
+        mctx.font = getComputedStyle(inp).font || GROW_FONT;
+        w = Math.ceil(mctx.measureText(inp.value || inp.placeholder || '').width) + 26;
+      } catch { /* measurement unavailable — fall through with a safe width */ }
+    }
     inp.style.width = Math.min(Math.max(w, min), max) + 'px';
   };
   const growInputsIn = root => $$('input[type="text"]', root).forEach(growInput);
@@ -136,8 +146,10 @@
     }
   };
 
-  const APP_VERSION = 'v4.0 DH';
+  const APP_VERSION = 'v4.2 DH';
   const WHATS_NEW = [
+    '🩹 v4.2: Fixed the “⚠️ AI apply failed: window.CloudStore.setMirrorDays is not a function” error — persistDays() now probes each cloud method and falls back safely, so ✨ AI-written days ALWAYS reach Supabase even on devices still holding an older cached cloud.js. setMirrorDays() itself now pushes the day list to the cloud immediately as well.',
+    '🤖 v4.1: Days made with “✨ AI Assistant — write our day” are now saved to the cloud with ALL their details and come back exactly as they were on every re-login/reload — plus a triple-durable local mirror so no saved day can ever disappear. Still NO auto-wipe anywhere: only your own “✖ Delete day” button removes a day.',
     '🔁 v4.0: Auto-wipe is GONE — every day you save now comes back exactly as it was when you re-login on any device (all day data AND the Pre-Scene Execution Affidavit are restored from the cloud, Day 1 included). Days are only ever removed by your own “✖ Delete day” / wipe buttons.',
     '💾 v3.9: The Save button is fully alive again — one tap now pushes EVERYTHING to the cloud at once (all Day-section entries, the complete Pre-Scene Execution Affidavit, both signatures and every created day page), shows ⏳ Saving… and only says \"Saved ✓\" after the data has genuinely landed in Supabase. Failed writes retry automatically; if the cloud is unreachable you get an honest warning instead of a silent dead click.',
     '🔁 v3.8: Everything you create during the day is now saved to the cloud — every blank/AI day page, every field, every signature. Real-time sync between devices (the other phone updates within ~1 second), a "synced Xs ago" status pill, and an auto-flush when you close the tab so the newest edits always reach Supabase.',
@@ -1666,16 +1678,27 @@
     const list = $$('.page')
       .filter(p => dayNumber(p.id))
       .map(p => ({ id: p.id, html: p.outerHTML }));
-    /* v4.1 DH — ALWAYS refresh the in-memory mirror from the DOM first, even
-       when the list is empty (all days deleted). Previously an empty list was
-       merged with the old mirror and silently dropped the deletion, so a
-       deleted day could resurrect itself on the next pull/re-login. */
-    window.CloudStore.setMirrorDays(list);
-    const p = window.CloudStore.saveDays(list);
-    if (p && typeof p.then === 'function') {
-      p.then(ok => { if (!ok) toast('⚠️ Cloud not reachable — this day lives on this device until sync returns.', 3200); })
-       .catch(() => {});
-    }
+    /* v4.2 DH — defensive capability checks: older browsers still holding a
+       STALE cached js/cloud.js (pre-v4.1) threw
+       "window.CloudStore.setMirrorDays is not a function" here, which killed
+       the whole AI-apply path before saveDays() could push anything to the
+       cloud. Each optional method is probed with typeof and wrapped in
+       try/catch, so even a mismatched cloud.js version cannot break saving. */
+    try {
+      if (typeof window.CloudStore.setMirrorDays === 'function') {
+        window.CloudStore.setMirrorDays(list);
+      } else if (typeof window.CloudStore.saveDays === 'function') {
+        window.CloudStore.saveDays(list);   // v3.x fallback: still reaches Supabase
+      }
+    } catch (e) { console.warn('[days] mirror set failed, falling back to saveDays:', e); }
+    try {
+      if (typeof window.CloudStore.saveDays !== 'function') return;
+      const p = window.CloudStore.saveDays(list);
+      if (p && typeof p.then === 'function') {
+        p.then(ok => { if (!ok) toast('⚠️ Cloud not reachable — this day lives on this device until sync returns.', 3200); })
+         .catch(() => {});
+      }
+    } catch (e) { console.error('[days] saveDays threw:', e); }
   };
   window.dhPersistDays = persistDays;   // used by js/cloud.js flush path & console recovery
   /* NOTE: addDayPage() and ensureSignAccepts() were MOVED UP with bootContract()
