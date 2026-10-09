@@ -146,8 +146,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.2 DH';
+  const APP_VERSION = 'v4.3 DH';
   const WHATS_NEW = [
+    '📔 v4.3: The BDSM Log Book (bdsmlogbook.vercel.app) is now integrated into the Day section — every day page shows a live “From the BDSM Log Book” feed pulled READ-ONLY from the Log Book’s own Supabase cloud (table log_book_data), matched by the day’s execution date, with a “last saved there Xm ago” stamp and one-tap 📔 Open Log Book buttons (header + bottom toolbar). The Log Book keeps saving to its ORIGINAL cloud only — this contract never writes into it.',
     '🩹 v4.2: Fixed the “⚠️ AI apply failed: window.CloudStore.setMirrorDays is not a function” error — persistDays() now probes each cloud method and falls back safely, so ✨ AI-written days ALWAYS reach Supabase even on devices still holding an older cached cloud.js. setMirrorDays() itself now pushes the day list to the cloud immediately as well.',
     '🤖 v4.1: Days made with “✨ AI Assistant — write our day” are now saved to the cloud with ALL their details and come back exactly as they were on every re-login/reload — plus a triple-durable local mirror so no saved day can ever disappear. Still NO auto-wipe anywhere: only your own “✖ Delete day” button removes a day.',
     '🔁 v4.0: Auto-wipe is GONE — every day you save now comes back exactly as it was when you re-login on any device (all day data AND the Pre-Scene Execution Affidavit are restored from the cloud, Day 1 included). Days are only ever removed by your own “✖ Delete day” / wipe buttons.',
@@ -1545,7 +1546,10 @@
         <button class="collapse-toggle" type="button" aria-expanded="true" title="Collapse / expand this day">▾ Collapse</button>
         <button class="clear-day-btn" type="button" data-day="day${N}">🗑 Clear this day</button>
         <button class="delete-day-btn danger" type="button" data-day="day${N}" title="Permanently remove Day ${N} from the contract and the cloud">✖ Delete day</button>
+        <a class="lb-day-link" href="https://bdsmlogbook.vercel.app/" target="_blank" rel="noopener" title="Open tonight in the BDSM Log Book — its saves stay in the Log Book's own cloud">📔 Open in Log Book ↗</a>
       </div>
+      <!-- v4.3 DH — live read-only feed from the BDSM Log Book cloud (filled by js/logbook.js) -->
+      <div class="logbook-feed"></div>
       <p class="lock-note">🔒 This day is marked as finished — everything (signatures included) is sealed. Set “Day finished” to ❌ No to edit again.</p>
 
       <p><strong>Between:</strong> Deep (the Dominant) &amp; Honey (the Submissive) · <em>${escH(p.coupleLabel || '')}</em></p>
