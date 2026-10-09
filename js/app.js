@@ -146,8 +146,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.5 DH';
+  const APP_VERSION = 'v4.6 DH';
   const WHATS_NEW = [
+    '💌 v4.6: The HTML email export now carries ALL THREE blocks for every finished day — “Day Section”, “Pre-Scene Execution Affidavit” AND the complete “📔 BDSM Log Book — Pre-Scene entries”: every data column of all eight Log Book sheets (Date, Mood, Followed rules, Duration, Activities, Safe word, Rating, Aftercare, Toys used, Bonus, Dominant journal, Debrief, both Feedback sheets), plus a per-sheet overview table, the cloud status for that date and a one-tap link to bdsmlogbook.vercel.app. The email only READS the on-page form — your entries still live in the Log Book’s original cloud alone.',
     '📔 v4.5: The BDSM Log Book now lives INSIDE the day’s “Pre-Scene Execution Affidavit” — a “📔 BDSM Log Book — Pre-Scene entries” block carrying EVERY column of every Log Book sheet (Daily · Scene · Debrief · Toys · Bonus · Dominant journal · both Feedback sheets). Your affidavit data (date of execution, time, debrief scores & notes, safeword used, Article 7 requests, toy inventory) is auto-filled into the matching columns; tweak anything, then 📤 Send (or 💾 Save) pushes one full-width row per sheet into the Log Book’s ORIGINAL Supabase cloud only — visible on bdsmlogbook.vercel.app, never stored twice.',
     '📔 v4.4: Fixed the Log Book integration AND made it two-way for pre-scene data — every Day page now carries a “📔 BDSM Log Book — Pre-Scene entries” form right under Article 2 (Date of scene). Fill it in and press 📤 Send (or just 💾 Save): your entries are pushed INTO THE LOG BOOK’S ORIGINAL CLOUD ONLY (same Supabase table log_book_data the bdsmlogbook.vercel.app site itself uses), merged row-by-row so nothing else can be overwritten, one row per contract day. The day feed now also reads the real stored format correctly, so entries you write on either app show up on both.',
     '📔 v4.3: The BDSM Log Book (bdsmlogbook.vercel.app) is now integrated into the Day section — every day page shows a live “From the BDSM Log Book” feed pulled from the Log Book’s own Supabase cloud (table log_book_data), matched by the day’s execution date, with a “last saved there Xm ago” stamp and one-tap 📔 Open Log Book buttons (header + bottom toolbar).',
@@ -2075,6 +2076,16 @@
       const wasCollapsed = page?.classList.contains('day-collapsed');
       if (wasCollapsed) page.classList.remove('day-collapsed');
       const rows = collectDay(page);
+      /* v4.6 DH — the "📔 BDSM Log Book — Pre-Scene entries" block must also
+         reach the email with ALL of its data columns (every sheet, every
+         column, plus cloud status). logbook.js exposes the snapshot reader;
+         it only reads the on-page form — the Log Book's original cloud is
+         never written to from the export. */
+      try {
+        const lbRows = (typeof window.dhLogbookEmailRows === 'function')
+          ? window.dhLogbookEmailRows(page) : [];
+        lbRows.forEach(r => rows.push({ label: r.label, value: r.value, lb: true }));
+      } catch (e) { console.warn('[email] log book snapshot skipped:', e); }
       if (wasCollapsed) page.classList.add('day-collapsed');
       return { id: s.dataset.day, rows };
     });
@@ -2218,11 +2229,50 @@
       /signature \(debrief\)/i,
       /Overall satisfaction|Aftercare effectiveness|Safeword used|Adjustments for next time|Debrief notes/i
     ];
-    const isAffidavit = r => AFFIDAVIT_MARKERS.some(m => typeof m === 'string' ? r.label.startsWith(m) : m.test(r.label));
+    const isAffidavit = r => AFFIDAVIT_MARKERS.some(m => typeof m === 'string' ? r.label.startsWith(m) : m.test(r.label)) && !isLb(r);
+    /* v4.6 DH — Log Book snapshot rows (label starts with "LB · ", "LB sheet · "
+       or "LB cloud") belong to the third email block, never to the affidavit */
+    const isLb = r => !!r.lb || /^LB\b/.test(r.label);
     const isCheck = r => /^(✓|○)/.test(r.label);
     const isSwVer = r => /^Safeword "/i.test(r.label);
     const isToy   = r => /^Toy · /i.test(r.label);
     const isDebr  = r => /Overall satisfaction|Aftercare effectiveness|Safeword used|Adjustments for next time|Debrief notes/i.test(r.label);
+
+    /* v4.6 DH — dedicated renderer for the "📔 BDSM Log Book — Pre-Scene entries"
+       block: every data column of every sheet as its own row, one compact
+       per-sheet summary table, plus cloud status & link. */
+    const renderLogbookBlock = list => {
+      if (!list.length) return;
+      plain += `\n── 📔 BDSM Log Book — Pre-Scene entries ──\n`;
+      bodyHtml += sectionH4(`📔 BDSM Log Book — Pre-Scene entries`);
+
+      const detail = list.filter(r => /^LB · /.test(r.label));
+      const sheets = list.filter(r => /^LB sheet · /.test(r.label));
+      const cloud  = list.filter(r => /^LB cloud/.test(r.label));
+      const link   = list.filter(r => /^LB link/.test(r.label));
+
+      if (detail.length) {
+        bodyHtml += `<div style="font-family:${SERIF};font-size:14px;color:#a04b5c;margin:8px 0 4px">&#128214; All recorded columns</div>`;
+        bodyHtml += dataTable(detail);
+        detail.forEach(r => { plain += `  ${r.label}: ${r.value}\n`; });
+      }
+      if (sheets.length) {
+        bodyHtml += `<div style="font-family:${SERIF};font-size:14px;color:#a04b5c;margin:16px 0 4px">&#128214; Sheet overview (every column)</div>`;
+        bodyHtml += gridTable(['Sheet', 'Columns'],
+          sheets.map(r => [`<strong style="color:#7b2d3b">${esc(r.label.replace(/^LB sheet · /, ''))}</strong>`, esc(r.value)]));
+        sheets.forEach(r => { plain += `  ${r.label}: ${r.value}\n`; });
+      }
+      if (cloud.length) {
+        bodyHtml += `<div style="font-family:${SERIF};font-size:14px;color:#a04b5c;margin:16px 0 4px">&#9729; Log Book cloud status</div>`;
+        bodyHtml += dataTable(cloud);
+        cloud.forEach(r => { plain += `  ${r.label}: ${r.value}\n`; });
+      }
+      link.forEach(r => {
+        plain += `  ${r.label}: ${r.value}\n`;
+        bodyHtml += `<p style="margin:10px 0 2px;font-family:${SANS};font-size:13px;color:#4a362c">📔 Open the Log Book: ` +
+          `<a href="${escA(r.value)}" target="_blank" rel="noopener" style="color:#7b2d3b;text-decoration:underline">${esc(r.value)}</a></p>`;
+      });
+    };
 
     const renderGroup = list => {
       if (!list.length) return;
@@ -2290,11 +2340,16 @@
         `</td></tr></table>`;
       if (!rows.length) { plain += '  (no entries recorded)\n'; bodyHtml += cardWrap('', `<p style="color:#5b4437;font-size:14px;margin:0;font-family:${SANS}">(&#9825; no entries recorded)</p>`); }
 
-      const dayRows = rows.filter(r => !isAffidavit(r));
-      const affRows = rows.filter(isAffidavit);
+      const lbRows    = rows.filter(isLb);
+      const restRows  = rows.filter(r => !isLb(r));
+      const dayRows = restRows.filter(r => !isAffidavit(r));
+      const affRows = restRows.filter(isAffidavit);
 
       if (dayRows.length) { bodyHtml += sectionH4('Day Section'); renderGroup(dayRows); }
       if (affRows.length) { bodyHtml += sectionH4(`Pre-Scene Execution Affidavit — ${esc(title)}`); renderGroup(affRows); }
+      /* v4.6 DH — third block: every Log Book column captured for this day */
+      if (lbRows.length) renderLogbookBlock(lbRows);
+      else { plain += '\n── 📔 BDSM Log Book — Pre-Scene entries ──\n  (log book block not present on this day)\n'; }
       bodyHtml += divider();
     });
     bodyHtml += footHtml;
