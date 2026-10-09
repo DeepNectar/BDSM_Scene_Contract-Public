@@ -1030,7 +1030,13 @@
 
     const form = pageEl.querySelector('.lb-form');
     if (form) {
-      /* every filled field, grouped by sheet, in Date → col order */
+      /* v3.5: ALWAYS fill every empty Log Book field from this day's
+         Day-section / Affidavit data first (same mapper used by 💾 Save),
+         then export — so the email carries ALL important data of every
+         column, even when the user never touched the pre-scene form. */
+      try { fillFormFromAffidavit(pageEl, form); } catch { /* best effort */ }
+
+      /* every field (filled or mirrored), grouped by sheet, Date → col order */
       $$('label.lb-fld[data-sheet]', form).forEach(lab => {
         const ctl = ctlOf(lab);
         const val = ((ctl && ctl.value) || '').trim();
