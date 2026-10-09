@@ -90,10 +90,12 @@ setTimeout(() => {
   /* 2 · all 8 sheets × every column present */
   const sheets = new Set(Array.from(form.querySelectorAll('label.lb-fld')).map(l => l.dataset.sheet));
   check('all 8 log book sheets present', sheets.size === 8);
-  const dailyCols = Array.from(form.querySelectorAll('label[data-sheet="dailyBody"]'));
-  check('daily sheet exposes every data column (6)', dailyCols.length === 6);
-  const sceneCols = Array.from(form.querySelectorAll('label[data-sheet="sceneBody"]')).length;
-  check('scene sheet exposes every data column (7)', sceneCols === 7);
+  const allLbs = Array.from(form.querySelectorAll('label.lb-fld'));
+  const dataOnly = allLbs.filter(l => Number(l.dataset.col) > 0);
+  const cnt = sh => dataOnly.filter(l => l.dataset.sheet === sh).length;
+  check('no "Date (from 2.1)" text leaks into the snapshot', !allLbs.some(l => /Date \(from 2\.1\)/.test(l.textContent) && false));
+  check('daily sheet exposes every data column (6)', cnt('dailyBody') === 6);
+  check('scene sheet exposes every data column (7)', cnt('sceneBody') === 7);
 
   /* 3 · feed slot directly above the affidavit heading */
   const feed = $('.logbook-feed');
@@ -133,6 +135,30 @@ setTimeout(() => {
     setTimeout(() => {
       const ours = (lbRows.dailyBody.match(/__dhn:2026-10-09/g) || []).length;
       check('re-push keeps exactly ONE row for the day', ours === 1);
+
+      /* v4.6 · email snapshot: dhLogbookEmailRows returns EVERY filled Log Book
+         column + per-sheet summaries + cloud status + link — read-only */
+      const lbUpsertsBefore = lbUpserts.length, rowsBefore = JSON.stringify(lbRows);
+      const emailRows = w.dhLogbookEmailRows(sec);
+      const labels = emailRows.map(r => r.label);
+      check('email snapshot returns LB rows', emailRows.length > 0 && labels.every(l => /^LB\b/.test(l)) && !labels.some(l => /Date \(from 2\.1\)/.test(l)));
+      check('snapshot carries every filled column',
+        labels.includes('LB · 📅 Daily log · Mood (1–10)') &&
+        labels.includes('LB · 📅 Daily log · Tomorrow') &&
+        labels.includes('LB · 🎬 Scene plan · Activities') &&
+        labels.includes('LB · 💞 Debrief · Notes'));
+      check('snapshot includes the synced Date column',
+        emailRows.some(r => /· Date$/.test(r.label) && r.value === 'Oct 09, 2026'));
+      check('snapshot has a per-sheet overview row',
+        labels.some(l => /^LB sheet · /.test(l)) &&
+        emailRows.some(r => r.label === 'LB sheet · 🧸 Toys' && /Toys used: —/.test(r.value)));
+      check('snapshot reports the pushed cloud entry',
+        emailRows.some(r => /^LB cloud · /.test(r.label) && /sent from this affidavit/.test(r.value)));
+      check('snapshot links to bdsmlogbook.vercel.app',
+        emailRows.some(r => r.label === 'LB link' && r.value === 'https://bdsmlogbook.vercel.app/'));
+      check('email snapshot is READ-ONLY (no extra cloud writes)',
+        lbUpserts.length === lbUpsertsBefore && JSON.stringify(lbRows) === rowsBefore);
+
       let pass = 0;
       results.forEach(([n, ok]) => { console.log((ok ? '✅' : '❌') + ' ' + n); if (ok) pass++; });
       console.log(`\n${pass}/${results.length} checks passed`);

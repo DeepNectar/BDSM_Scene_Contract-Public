@@ -983,8 +983,9 @@
     /* v3.2: any edit inside a day's DD/MM/YYYY pills (Article 2.1, exec
        date, signature dates) instantly re-syncs the Log Book form's Date
        fields + the empty exec pill — one shared "same day" everywhere. */
-    if (!document.dataset.lbDateSyncWired) {
-      document.dataset.lbDateSyncWired = '1';
+    const ds = document.documentElement && document.documentElement.dataset;
+    if (ds && !ds.lbDateSyncWired) {
+      ds.lbDateSyncWired = '1';
       document.addEventListener('input', e => {
         const t = e.target;
         if (!t || !t.closest) return;
@@ -998,6 +999,83 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') sync(true);
     });
+  };
+
+  /* ---------- v3.4: email-export snapshot of every Log Book column --------
+     Called by app.js (💌 HTML email) for each finished day page. Returns the
+     FULL contents of the day's "📔 BDSM Log Book — Pre-Scene entries" form —
+     one row per field, carrying EVERY data column of ALL sheets, plus a
+     per-sheet summary and the cloud status. Purely local DOM read: nothing
+     here touches or duplicates the Log Book's original Supabase cloud. */
+  const fieldTitle = lab => {
+    /* label text minus the 📅 glyph and minus the <select>/<input> wrapper's
+       own text (option lists) — clone so the live form is untouched */
+    const c = lab.cloneNode(true);
+    const ctl = c.querySelector('.lb-fld-ctl');
+    if (ctl) ctl.remove();
+    return (c.textContent || '').replace(/📅/g, '').replace(/\s+/g, ' ').trim();
+  };
+
+  window.dhLogbookEmailRows = (pageEl) => {
+    const rows = [];
+    if (!pageEl) return rows;
+    const add = (label, value) => {
+      value = String(value == null ? '' : value).trim();
+      if (value) rows.push({ label, value });
+    };
+
+    /* the day's date exactly as 📤 pushes it to the Log Book cloud */
+    let key = null;
+    try { syncDayDates(pageEl); key = dayDateKey(pageEl); } catch { /* ignore */ }
+
+    const form = pageEl.querySelector('.lb-form');
+    if (form) {
+      /* every filled field, grouped by sheet, in Date → col order */
+      $$('label.lb-fld[data-sheet]', form).forEach(lab => {
+        const ctl = ctlOf(lab);
+        const val = ((ctl && ctl.value) || '').trim();
+        if (!val) return;
+        const sh   = lab.dataset.sheet;
+        const colN = Number(lab.dataset.col);
+        const name = fieldTitle(lab);
+        const sheetTitle = SHEET_LABEL[sh] || sh;
+        add(`LB · ${sheetTitle} · ${colN === 0 ? 'Date' : name}`, val);
+      });
+
+      /* one compact row per sheet so the whole column set is visible at once */
+      FORM_SHEETS.forEach(sh => {
+        const labs = $$('.lb-group', form)
+          .find(g => { const lg = g.querySelector('legend'); return lg && lg.textContent.trim() === (SHEET_LABEL[sh] || sh); });
+        if (!labs) return;
+        const cells = $$('label.lb-fld[data-sheet]', labs).map(lab => {
+          const ctl = ctlOf(lab);
+          const v = ((ctl && ctl.value) || '').trim();
+          const nm = fieldTitle(lab);
+          return `${nm}: ${v || '—'}`;
+        });
+        if (cells.length) add(`LB sheet · ${SHEET_LABEL[sh] || sh}`, cells.join('  ·  '));
+      });
+    }
+
+    /* what actually lives in the Log Book cloud for this day (read-only mirror) */
+    try {
+      if (key) {
+        const lbDate = fmtLBDate(key);
+        let found = false;
+        Object.keys(latest).forEach(sh => {
+          const html = (latest[sh] || {}).html || '';
+          const own = html.indexOf('__dhn:' + key) !== -1;
+          const has = own || (/value="[^"]*"/i.test(html) && new RegExp(escH(lbDate).replace(/[&<>]/g, '') , 'i').test(html));
+          if (!has) return;
+          found = true;
+          add('LB cloud · ' + (SHEET_LABEL[sh] || sh), `Entry dated ${lbDate} present in the Log Book cloud${own ? ' (sent from this affidavit)' : ''}`);
+        });
+        if (!found) add('LB cloud status', key ? `No entry dated ${lbDate} in the Log Book cloud yet — press 📤 Send to Log Book cloud after filling the pre-scene form` : '');
+      }
+    } catch { /* snapshot is best-effort */ }
+
+    add('LB link', LB_URL);
+    return rows;
   };
 
   /* hooks so app.js keeps NEW/AI-created days integrated too */
