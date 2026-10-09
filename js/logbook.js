@@ -299,39 +299,77 @@
     return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
   };
 
-  const dayDateKey = page => {
-    /* v3: the affidavit's "Date of execution" pill is the authoritative
-       date for the log book row (it sits inside the Pre-Scene Execution
-       Affidavit itself). Fall back to Article 2.1, then the heading text. */
+  /* read a DD/MM/YYYY triple from a list of exactly three inputs */
+  const keyFromTriple = ins => {
+    if (!ins || ins.length !== 3) return null;
+    const d = parseInt(ins[0].value, 10);
+    const m = parseInt(ins[1].value, 10);
+    const y = parseInt(ins[2].value, 10);
+    if (!(d >= 1 && d <= 31) || !(m >= 1 && m <= 12) || !(y > 1990 && y < 3000)) return null;
+    return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+  };
+
+  /* read the exact Article 2.1 "Date of scene" pill's key (authoritative) */
+  const row21Pill = page => {
     try {
+      for (const tr of $$('tr', page)) {
+        const th = tr.firstElementChild;
+        if (!th || !/2\.1\s*Date of scene/i.test(th.textContent || '')) continue;
+        const td = tr.children[1];
+        if (!td) continue;
+        return td.querySelector('.datetime-group');
+      }
+    } catch { /* ignore */ }
+    return null;
+  };
+
+  const dayDateKeyFrom21 = page => {
+    const g = row21Pill(page);
+    return g ? keyFromTriple(Array.from(g.querySelectorAll('input'))) : null;
+  };
+
+  const dayDateKey = page => {
+    /* v3.2 FIX ("⚠️ Set the day's date (Article 2.1) first." even though
+       2.1 shows the same day): the old order trusted the affidavit's
+       "Date of execution" pill FIRST. That pill is frequently EMPTY (or
+       carries only a stale partial value), and the fallback scanned every
+       .datetime-group in DOM order — which can pick up a signature/debrief
+       date instead of Article 2.1. Now Article 2.1 "Date of scene" is the
+       AUTHORITATIVE source (it always matches the day), the exec pill is
+       only a secondary candidate, and the day heading is the last resort. */
+    try {
+      /* 1 · exact "2.1 Date of scene" table row */
+      const rows = $$('tr', page);
+      for (const tr of rows) {
+        const th = tr.firstElementChild;
+        if (!th || !/2\.1\s*Date of scene/i.test(th.textContent || '')) continue;
+        const td = tr.children[1];
+        if (!td) continue;
+        const g = td.querySelector('.datetime-group');
+        if (!g) continue;
+        const k = keyFromTriple(Array.from(g.querySelectorAll('input')));
+        if (k) return k;
+        break;
+      }
+    } catch { /* fall through */ }
+    try {
+      /* 2 · affidavit "Date of execution" pill (same day by design) */
       const line = page.querySelector('.exec-line');
       if (line) {
-        const g = line.querySelector('.datetime-group');
-        if (g) {
-          const ins = Array.from(g.querySelectorAll('input'));
-          if (ins.length === 3) {
-            const d = parseInt(ins[0].value, 10);
-            const m = parseInt(ins[1].value, 10);
-            const y = parseInt(ins[2].value, 10);
-            if (d && m && y) return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-          }
-        }
+        const g = line.querySelector('.datetime-group:not(.time-group)');
+        const k = g && keyFromTriple(Array.from(g.querySelectorAll('input')));
+        if (k) return k;
       }
     } catch { /* fall through */ }
-    /* "2.1 Date of scene" row — the first .datetime-group with 3 numeric
-       inputs (DD / MM / YYYY) inside the day page. */
     try {
-      const groups = Array.from(page.querySelectorAll('.datetime-group'));
-      for (const g of groups) {
-        const ins = Array.from(g.querySelectorAll('input'));
-        if (ins.length !== 3) continue;
-        const d = parseInt(ins[0].value, 10);
-        const m = parseInt(ins[1].value, 10);
-        const y = parseInt(ins[2].value, 10);
-        if (d && m && y) return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+      /* 3 · any complete DD/MM/YYYY pill on the day page */
+      for (const g of $$('.datetime-group', page)) {
+        if (g.classList.contains('time-group')) continue;
+        const k = keyFromTriple(Array.from(g.querySelectorAll('input')));
+        if (k) return k;
       }
     } catch { /* fall through */ }
-    /* fallback: any date-looking text inside the day's heading
+    /* 4 · fallback: any date-looking text inside the day's heading
        (AI days carry p.dateStr like "Fri, Oct 9, 2026") */
     try {
       const head = page.querySelector('.page-head h2');
@@ -357,11 +395,18 @@
     return `<label class="lb-fld" data-sheet="${f.sheet}" data-col="${f.col}" data-kind="${f.k}">${escH(f.label)}${ctrl}</label>`;
   };
 
+  /* v3.2: every sheet group also carries its own Date column (col 0),
+     shown read-only and auto-synced from Article 2.1 / the day's date —
+     "the same as 2.1 Date of scene — the same as the same day". */
+  const dateFldHTML = sheetName =>
+    `<label class="lb-fld lb-fld-date" data-sheet="${sheetName}" data-col="0" data-kind="date">📅 Date (from 2.1)` +
+    `<span class="lb-fld-ctl"><input type="text" readonly tabindex="-1" placeholder="set the day's date first"></span></label>`;
+
   const groupHTML = sheetName => {
     const fs = FIELDS.filter(f => f.sheet === sheetName);
     if (!fs.length) return '';
     return `<fieldset class="lb-group"><legend>${SHEET_LABEL[sheetName] || sheetName}</legend>` +
-      fs.map(fldHTML).join('') + '</fieldset>';
+      dateFldHTML(sheetName) + fs.map(fldHTML).join('') + '</fieldset>';
   };
 
   const FORM_SHEETS = ['dailyBody','sceneBody','toyBody','bonusBody','dominantBody','debriefBody','dailyFeedbackBody','dominantFeedbackBody'];
@@ -403,7 +448,10 @@
   const buildRow = (sheetName, dateKey, vals) => {
     const cols = FIELDS.filter(f => f.sheet === sheetName);
     const maxCol = Math.max(SHEET_WIDTH[sheetName] || 0, ...cols.map(c => c.col));
-    let html = `<tr data-lb="__dhn:${dateKey}"><td><input type="text" value="${escH(fmtLBDate(dateKey))}"></td>`;
+    /* v3.2: the Date cell shows the day's date in the SAME format the Log
+       Book site itself uses ("Oct 09, 2026") — and it always equals
+       Article 2.1 / the affidavit execution date of this day. */
+    let html = `<tr data-lb="__dhn:${dateKey}"><td><input type="text" value="${escH(fmtLBDate(dateKey))}" title="Same as Article 2.1 Date of scene"></td>`;
     for (let c = 1; c <= maxCol; c++) {
       const f = cols.find(x => x.col === c);
       const v = (vals && vals[c]) || '';
@@ -447,7 +495,15 @@
     const page = form.closest('.page');
     const noteEl = form.querySelector('.lb-saved-note');
     const btn = form.querySelector('.lb-push-btn');
-    const key = dayDateKey(page);
+    /* v3.2: refresh the date mirror one last time — if 2.1 or the exec pill
+       carries a complete date, the day is keyed automatically */
+    syncDayDates(page);
+    let key = dayDateKey(page);
+    if (!key) {
+      /* last resort: parse the read-only Date field shown in the form */
+      const dFld = form.querySelector('label[data-kind="date"] .lb-fld-ctl input');
+      if (dFld && dFld.value.trim()) key = toKey(dFld.value.trim());
+    }
     if (!key) {
       if (noteEl) noteEl.textContent = '⚠️ Set the day’s date (Article 2.1) first.';
       return false;
@@ -480,6 +536,48 @@
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '📤 Send to Log Book cloud'; }
     }
+  };
+
+  /* ---------- date sync: Article 2.1 ⇄ affidavit exec pill ⇄ form --------
+     v3.2: "the same as 2.1 Date of scene — the same as the same day".
+     The day's log book row is keyed by Article 2.1; the affidavit's
+     "Date of execution" line always mirrors it, and both are pushed into
+     every Log Book sheet's Date column automatically — so filling one
+     place fills them all, and 📤 never complains about a missing date. */
+  const setPillFromKey = (g, key) => {
+    if (!g || !key) return;
+    const ins = Array.from(g.querySelectorAll('input'));
+    if (ins.length !== 3) return;
+    const p = key.split('-');                          // YYYY MM DD
+    ins[0].value = String(parseInt(p[2], 10));         // DD
+    ins[1].value = String(parseInt(p[1], 10));         // MM
+    ins[2].value = p[0];                               // YYYY
+  };
+
+  const syncDayDates = page => {
+    if (!page) return;
+    try {
+      const key = dayDateKey(page);                    // 2.1 wins, then exec pill, then heading
+      if (!key) return;
+      /* mirror into the affidavit "Date of execution" pill when empty */
+      const line = page.querySelector('.exec-line');
+      if (line) {
+        const g = line.querySelector('.datetime-group:not(.time-group)');
+        if (g) {
+          const ins = Array.from(g.querySelectorAll('input'));
+          if (ins.length === 3 && ins.every(i => !i.value.trim())) setPillFromKey(g, key);
+        }
+      }
+      /* show the day's date in the log book form header tag */
+      const tag = page.querySelector('.lb-aff-title .lb-aff-daytag');
+      if (tag) tag.textContent = '· ' + ((page.querySelector('.page-head h2')?.textContent || '').split('—')[0].trim() || page.id)
+        + ' · ' + fmtLBDate(key);
+      /* auto-fill every sheet's Date cell in the form (read-only, synced) */
+      $$('label.lb-fld[data-kind="date"]', page).forEach(lab => {
+        const ctl = ctlOf(lab);
+        if (ctl) { ctl.value = fmtLBDate(key); ctl.placeholder = key || 'set the date first'; }
+      });
+    } catch { /* never break the page over the mirror */ }
   };
 
   /* ---------- render the per-day feed ------------------------------------ */
@@ -626,6 +724,29 @@
         }
       }
 
+      /* v3.2: Article 2.1 "Date of scene" is authoritative for the day —
+       * when it is still empty but the affidavit's "Date of execution"
+       * pill carries a complete DD/MM/YYYY, mirror it INTO 2.1 so both
+       * show the same day and 📤 never says "Set the day's date first". */
+      try {
+        if (!dayDateKeyFrom21(page) && dur !== null) {
+          const line2 = execLine;
+          if (line2) {
+            const g2 = line2.querySelector('.datetime-group:not(.time-group)');
+            const k2 = g2 && keyFromTriple(Array.from(g2.querySelectorAll('input')));
+            if (k2) {
+              const row21 = $$('tr', page).find(tr => tr.firstElementChild && /2\.1\s*Date of scene/i.test(tr.firstElementChild.textContent || ''));
+              const td21 = row21 && row21.children[1];
+              const pill21 = td21 && td21.querySelector('.datetime-group');
+              if (pill21 && Array.from(pill21.querySelectorAll('input')).every(i => !i.value.trim())) {
+                setPillFromKey(pill21, k2);
+                try { window.dhWriteStore && window.dhWriteStore(); } catch { /* autosave will pick it up anyway */ }
+              }
+            }
+          }
+        }
+      } catch { /* mirror is best-effort */ }
+
       /* toy table rows → Toys-used cell */
       let toysUsed = '';
       const toyTable = page.querySelector('.toy-table');
@@ -673,9 +794,17 @@
         const tag = form.querySelector('.lb-aff-daytag');
         if (tag) tag.textContent = '· ' + ((page.querySelector('.page-head h2')?.textContent || '').split('—')[0].trim() || page.id);
         fillFormFromAffidavit(page, form);
+        syncDayDates(page);                       // v3.2: date fields show the day's date
       }
       form.addEventListener('submit', e => { e.preventDefault(); pushDay(form); });
-      form.addEventListener('input',  () => { form.dataset.lbDirty = '1'; });
+      form.addEventListener('input',  e => {
+        /* v3.2: editing Article 2.1 / exec-date pills bubbles up to the day
+           page (capture listener below) — keep every Date display in the
+           form in lock-step with the day */
+        const t = e.target;
+        if (t && t.closest && t.closest('.datetime-group') && !t.closest('.lb-form')) syncDayDates(form.closest('.page'));
+        form.dataset.lbDirty = '1';
+      });
       form.addEventListener('change', () => { form.dataset.lbDirty = '1'; });
       const btn = form.querySelector('.lb-push-btn');
       if (btn) btn.addEventListener('click', () => pushDay(form));
@@ -826,6 +955,20 @@
     wireButtons();
     refreshAll();
     sync(false);
+    /* v3.2: any edit inside a day's DD/MM/YYYY pills (Article 2.1, exec
+       date, signature dates) instantly re-syncs the Log Book form's Date
+       fields + the empty exec pill — one shared "same day" everywhere. */
+    if (!document.dataset.lbDateSyncWired) {
+      document.dataset.lbDateSyncWired = '1';
+      document.addEventListener('input', e => {
+        const t = e.target;
+        if (!t || !t.closest) return;
+        const g = t.closest('.datetime-group');
+        if (!g) return;
+        const page = t.closest('.page');
+        if (page && /^day\d+$/.test(page.id || '')) syncDayDates(page);
+      }, true);
+    }
     setInterval(() => { if (document.visibilityState === 'visible') sync(true); }, REFRESH_MS);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') sync(true);
