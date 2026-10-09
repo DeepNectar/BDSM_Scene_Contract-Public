@@ -60,6 +60,42 @@
                                               including edited static pages. */
   const dayNumber = id => { const m = /^day(\d+)$/.exec(id); return m ? +m[1] : null; };
 
+  /* ---------- v4.8 DH — DELETE TOMBSTONES ("deleted days never come back") ----------
+     Root cause of deleted days resurrecting: js/cloud.js mergeDays() UNION-merges
+     the cloud list with this device's local snapshots on EVERY pull, and saveDays/
+     setMirrorDays merged instead of replacing — so "✖ Delete day" removed the page
+     from the DOM but the old copy was silently restored on reload / re-login /
+     realtime sync / the other phone. Now every deletion (and wipe) is recorded as
+     a permanent tombstone in localStorage under DELETED_KEY. Tombstones are:
+       • written BEFORE any persist call, so they ride along into Supabase;
+       • honoured by restoreDays() — a tombstoned day can NEVER be re-attached;
+       • pruned out of every incoming cloud/local day list (see pruneDeleted). */
+  var DELETED_KEY = 'dhContract.deleted.v1';   // var → also readable from the service worker
+  const readDeleted = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(DELETED_KEY));
+      if (raw && Array.isArray(raw.ids)) return raw.ids.filter(id => dayNumber(id));
+      if (Array.isArray(raw)) return raw.filter(id => dayNumber(id));   // tolerate plain-array form
+    } catch { /* ignore */ }
+    return [];
+  };
+  const addDeleted = ids => {
+    const cur = new Set(readDeleted());
+    let changed = false;
+    [].concat(ids || []).forEach(id => { if (dayNumber(id) && !cur.has(id)) { cur.add(id); changed = true; } });
+    if (!changed) return cur;
+    try { localStorage.setItem(DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() })); }
+    catch { /* storage full — session memory still guards this tab */ }
+    return cur;
+  };
+  const isDeletedDay = id => readDeleted().includes(id);
+  /* drop every tombstoned day from a [{id,html}] list (used on all inbound lists) */
+  const pruneDeleted = list => {
+    const del = new Set(readDeleted());
+    return (Array.isArray(list) ? list : []).filter(d => d && d.id && !del.has(d.id));
+  };
+  window.dhReadDeleted = readDeleted;   // used by js/cloud.js applyRows()/saveDays()
+
   /* ---------- text-area auto-grow — declared FIRST (v3.7 DH) ----------
      applyFieldData()/loadSaved() call autoGrowAll() during boot, but these
      helpers used to live hundreds of lines below as `const`s → TDZ crash
@@ -146,8 +182,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.7 DH';
+  const APP_VERSION = 'v4.8 DH';
   const WHATS_NEW = [
+    '🗑 v4.8: “✖ Delete day” is now PERMANENT — a deleted day can NEVER come back. Previously the cloud sync silently merged old copies of deleted days back in on reload / re-login / realtime updates (or from the other phone). Every deletion (and every wipe) now writes a permanent tombstone that is honoured on this device AND pushed to the cloud, so once you delete Day N it stays gone everywhere, for good. Creating a NEW day afterwards still works exactly as before.',
     '📱 v4.7: The contract is now a true phone-first web app (PWA)! Every screen resolution adapts — from the tiniest 320 px phones (iPhone SE, Galaxy Fold cover) through standard & large phones up to small tablets — so ALL content stays visible and nothing gets cut off: safe-area padding for notch/Dynamic Island/home-bar phones, dvh viewport sizing (modals fit the real visible screen even with the on-screen keyboard open), ≥44 px thumb-friendly buttons & date boxes, wide tables that scroll sideways instead of clipping, action buttons in a tidy full-width grid, near-full-screen Email/AI sheets, an "Add to Home Screen" install prompt + badge, and the manifest/apple meta tags wired so it launches standalone like a native app.',
     '💌 v4.6: The HTML email export now carries ALL THREE blocks for every finished day — “Day Section”, “Pre-Scene Execution Affidavit” AND the complete “📔 BDSM Log Book — Pre-Scene entries”: every data column of all eight Log Book sheets (Date, Mood, Followed rules, Duration, Activities, Safe word, Rating, Aftercare, Toys used, Bonus, Dominant journal, Debrief, both Feedback sheets), plus a per-sheet overview table, the cloud status for that date and a one-tap link to bdsmlogbook.vercel.app. The email only READS the on-page form — your entries still live in the Log Book’s original cloud alone.',
     '📔 v4.5: The BDSM Log Book now lives INSIDE the day’s “Pre-Scene Execution Affidavit” — a “📔 BDSM Log Book — Pre-Scene entries” block carrying EVERY column of every Log Book sheet (Daily · Scene · Debrief · Toys · Bonus · Dominant journal · both Feedback sheets). Your affidavit data (date of execution, time, debrief scores & notes, safeword used, Article 7 requests, toy inventory) is auto-filled into the matching columns; tweak anything, then 📤 Send (or 💾 Save) pushes one full-width row per sheet into the Log Book’s ORIGINAL Supabase cloud only — visible on bdsmlogbook.vercel.app, never stored twice.',
@@ -397,6 +434,11 @@
     if (!list) {
       try { const raw = JSON.parse(localStorage.getItem(DAYS_KEY)); if (raw && Array.isArray(raw.list)) list = raw.list; } catch { /* ignore */ }
     }
+    /* v4.8 DH — tombstone guard: strip any day that was deleted via "✖ Delete
+       day" / wipe from EVERY inbound list (cloud arg, cloud mirror, local
+       snapshot) before it can be re-attached. This is what makes a deletion
+       permanent across reloads, re-logins and both phones. */
+    if (list) list = pruneDeleted(list);
     if (list) {
       /* v4.0 DH — cloud/local list is the source of truth: any day page that
          no longer appears in it was explicitly deleted on some device, so drop
@@ -409,9 +451,12 @@
     /* v3.8 DH — a day that exists in the DOM but not yet in the cloud list was
        created on THIS device moments ago (e.g. autosave raced a realtime pull).
        Re-persist immediately so it is never lost — "everything created in the
-       day stays saved". (v4.0: the old sticky `wiped` gate is gone.) */
+       day stays saved". (v4.0: the old sticky `wiped` gate is gone.)
+       v4.8 DH — tombstoned pages still in the DOM are NOT counted, so a stale
+       page can never trigger a re-persist that resurrects a deleted day. */
     {
-      const domCreated = $$('.page').filter(p => dayNumber(p.id)).length;
+      const delSet = new Set(readDeleted());
+      const domCreated = $$('.page').filter(p => dayNumber(p.id) && !delSet.has(p.id)).length;
       const cloudCreated = (list || []).length;
       if (domCreated > cloudCreated && typeof persistDays === 'function') persistDays();
     }
@@ -420,6 +465,7 @@
     if (!summary) return;
     list.forEach(d => {
       if (!d || !d.id || !d.html) return;
+      if (isDeletedDay(d.id)) return;                // v4.8 DH — deleted days never come back
       const existing = $('#' + d.id);
       if (existing) {
         /* v4.0 DH — cloud copy wins for STATIC pages (Day 1): replace the
@@ -913,6 +959,12 @@
     window.CloudStore.saveFields(fields);
     collapsedOverride.delete(page.id);
     page.remove();
+    /* v4.8 DH — THE fix for "deleted day comes back": record a permanent
+       tombstone BEFORE persisting, so the pruned list that goes to the cloud
+       mirror + Supabase no longer contains it AND every future restore path
+       (reload / re-login / realtime pull / other device) refuses to re-attach
+       this day id. New days created afterwards are untouched. */
+    addDeleted(dayId);
     persistDays();                       // cloud day list no longer contains it
     save();
     refreshAiDayOptions();               // keep the AI target list in sync
@@ -940,6 +992,10 @@
   const nextDayNumber = () => dayPages().reduce((mx, p) => Math.max(mx, dayNumber(p.id)), 0) + 1;
 
   const wipeAllDays = silent => {
+    /* v4.8 DH — tombstone every wiped day id BEFORE persisting so the cloud
+       mirror / Supabase receive the pruned list and nothing ever re-attaches
+       these days on reload, re-login or from the other device. */
+    addDeleted(dayPages().map(p => p.id));
     dayPages().forEach(p => {
       const dayId = p.id;
       const accepts = readAccepts();
@@ -999,6 +1055,10 @@
   /* ---------- add a brand-new BLANK day (manual creation) ---------- */
   const addBlankDay = () => {
     const N = nextDayNumber();
+    /* v4.8 DH — if this exact day id was deleted before (tombstoned), the user
+       is deliberately creating a NEW day with that number → lift the tombstone
+       so the fresh page can persist & restore normally. */
+    liftDeleted('day' + N);
     const section = addDayPage(blankPlan(N));
     persistDays();
     save();
