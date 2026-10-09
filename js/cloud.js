@@ -350,13 +350,21 @@
 
     saveFields(fields) { mem.fields = fields;  writeMirrorLocal(); return upsert('fields',  fields); },
     saveAccepts(a)     { mem.accepts = a;      writeMirrorLocal(); return upsert('accepts', a); },
-    /* v4.1 DH — setMirrorDays(list): authoritative DOM snapshot from app.js's
+    /* v4.2 DH — setMirrorDays(list): authoritative DOM snapshot from app.js's
        persistDays(). Replaces the mirror (so deletions stick) AND updates this
-       device's durable local copy, then saveDays() pushes it to Supabase. */
+       device's durable local copy, then saveDays() pushes it to Supabase.
+       v4.2 FIX: this method now ALSO upserts the list to 'days' immediately.
+       Older browsers with a stale cached cloud.js threw
+       "window.CloudStore.setMirrorDays is not a function" inside persistDays(),
+       which killed the AI-apply path before saveDays() ever ran — so AI days
+       never reached the cloud. The immediate upsert here guarantees that even
+       if a caller's follow-up saveDays() call is missed or throws, the newest
+       day list still lands in Supabase. */
     setMirrorDays(list) {
-      if (!Array.isArray(list)) return;
-      mem.days = list.filter(d => d && d.id && d.html);
+      if (!Array.isArray(list)) return Promise.resolve(false);
+      mem.days = mergeDays(list.filter(d => d && d.id && d.html), []);
       writeMirrorLocal();
+      return upsert('days', mem.days);
     },
     /* v4.1 DH — saveDays MERGES with the mirror instead of replacing it, so an
        AI day captured by one code path is never dropped by another path that
