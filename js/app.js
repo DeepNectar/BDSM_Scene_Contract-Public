@@ -1666,8 +1666,16 @@
     const list = $$('.page')
       .filter(p => dayNumber(p.id))
       .map(p => ({ id: p.id, html: p.outerHTML }));
-    window.CloudStore.saveDays(list)
-      .then(ok => { if (!ok && !window.CloudStore.ready) toast('⚠️ Cloud not configured — this day lives in the page only.', 3200); });
+    /* v4.1 DH — ALWAYS refresh the in-memory mirror from the DOM first, even
+       when the list is empty (all days deleted). Previously an empty list was
+       merged with the old mirror and silently dropped the deletion, so a
+       deleted day could resurrect itself on the next pull/re-login. */
+    window.CloudStore.setMirrorDays(list);
+    const p = window.CloudStore.saveDays(list);
+    if (p && typeof p.then === 'function') {
+      p.then(ok => { if (!ok) toast('⚠️ Cloud not reachable — this day lives on this device until sync returns.', 3200); })
+       .catch(() => {});
+    }
   };
   window.dhPersistDays = persistDays;   // used by js/cloud.js flush path & console recovery
   /* NOTE: addDayPage() and ensureSignAccepts() were MOVED UP with bootContract()
