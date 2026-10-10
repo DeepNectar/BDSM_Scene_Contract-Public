@@ -24,10 +24,14 @@ const appSrc = fs.readFileSync('js/app.js', 'utf8');
 
 /* ---------- shared fake Supabase server (the contract_state table) ---------- */
 const serverRows = [];            // [{k, v}]
-let realtimeListeners = [];       // fired on every upsert, like postgres_changes
+const deviceClients = [];         // one client per device — for postgres_changes broadcast
 
 function makeServerClient() {
-  return {
+  /* each device gets its OWN client instance so per-device channel callbacks
+     are registered separately — exactly like two browsers hitting one Postgres */
+  const myListeners = [];
+  const client = {
+    _myListeners: myListeners,
     from(table) {
       if (table !== 'contract_state') throw new Error('wrong table ' + table);
       return {
@@ -38,13 +42,26 @@ function makeServerClient() {
           const i = serverRows.findIndex(r => r.k === row.k);
           if (i >= 0) Object.assign(serverRows[i], row);
           else serverRows.push({ created_at: new Date().toISOString(), last_writer: 'unknown', ...row });
-          realtimeListeners.forEach(fn => { try { fn(); } catch {} });
+          /* broadcast postgres_changes to EVERY OTHER device's listeners */
+          deviceClients.forEach(c => {
+            if (c !== client && c._myListeners.length)
+              c._myListeners.forEach(fn => { try { fn(); } catch {} });
+          });
           return Promise.resolve({ error: null });
         },
       };
     },
-    channel() { return { on() { return this; }, subscribe() { return this; } }; },
+    channel() {
+      const ch = {
+        on(ev, cfg, cb) { myListeners.push(cb); return ch; },
+        subscribe() { return ch; },
+      };
+      return ch;
+    },
+    realtime: {},
   };
+  deviceClients.push(client);
+  return client;
 }
 
 /* ---------- one device = fresh jsdom + fresh localStorage ---------- */
@@ -79,10 +96,18 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   A.$('#login-btn').click();
   await wait(400);
 
-  /* create a day the way ➕ Add blank day does (delegated #empty-blank-btn click) */
+  /* Create a day exactly the way ➕ Add blank day does.
+     NOTE: at login restoreDays() re-attaches the static founding Day 1, so the
+     new blank day is #day2 ONLY when the cloud store was truly empty. After a
+     FULL RESET SQL run this is the case; for repeat tests we assert against the
+     actual highest existing day number instead of hard-coding #day2. */
+  const dayNum = id => { const m = /^day(\d+)$/.exec(id || ''); return m ? +m[1] : 0; };
   const beforePages = A.doc.querySelectorAll('.page').length;
+  const maxDayBefore = Array.from(A.doc.querySelectorAll('.page')).reduce((mx, p) => Math.max(mx, dayNum(p.id)), 0);
+  const expectedNewId = 'day' + (maxDayBefore + 1);
   {
-    let btn = Array.from(A.doc.querySelectorAll('button')).find(b => /Add blank day/i.test(b.textContent));
+    let btn = A.doc.getElementById('empty-blank-btn')
+      || Array.from(A.doc.querySelectorAll('button')).find(b => /Add blank day/i.test(b.textContent));
     if (!btn) {
       /* inject the same button into the DOM and click it — exercises the real
          delegated listener in app.js without depending on empty-state timing */
@@ -94,14 +119,14 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     btn.click();
   }
   await wait(300);
-  const day2A = A.doc.getElementById('day2');
-  check('device A: ➕ Add blank day created #day2', !!day2A && A.doc.querySelectorAll('.page').length > beforePages);
+  const dayNewA = A.doc.getElementById(expectedNewId);
+  check(`device A: ➕ Add blank day created #${expectedNewId}`, !!dayNewA && A.doc.querySelectorAll('.page').length > beforePages);
 
   /* type into Day-section field, Affidavit field and tick a checklist box */
-  const textInputs = Array.from(day2A.querySelectorAll('input[type="text"], textarea'));
-  const ta = day2A.querySelector('textarea') || textInputs[textInputs.length - 1];
+  const textInputs = Array.from(dayNewA.querySelectorAll('input[type="text"], textarea'));
+  const ta = dayNewA.querySelector('textarea') || textInputs[textInputs.length - 1];
   const inp = textInputs[0];
-  const cb = day2A.querySelector('input[type="checkbox"]');
+  const cb = dayNewA.querySelector('input[type="checkbox"]');
   inp.value = 'Rope bonding, blindfold, slow Sunday';
   inp.dispatchEvent(new A.w.Event('input', { bubbles: true }));
   ta.value = 'Aftercare: warm cocoa, cuddles, hair brushing';
@@ -115,31 +140,33 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   check('device A: save reported success toast', /Saved ✓/.test(A.$('#toast').textContent));
 
   /* what landed on the SHARED server? */
+  const newId = expectedNewId;                      // e.g. 'day2' on a reset cloud store
+  const newNum = newId.replace(/^day/, '');
   const daysRow = serverRows.find(r => r.k === 'days');
   const fieldsRow = serverRows.find(r => r.k === 'fields');
-  check('server: day list contains day2 HTML', !!(daysRow && Array.isArray(daysRow.v) && daysRow.v.some(d => d.id === 'day2' && /Day 2/.test(d.html))));
+  check(`server: day list contains ${newId} HTML`, !!(daysRow && Array.isArray(daysRow.v) && daysRow.v.some(d => d.id === newId && new RegExp('Day ' + newNum).test(d.html))));
   const fkeys = fieldsRow ? Object.keys(fieldsRow.v) : [];
-  const hasTyped = fkeys.some(k => k.startsWith('day2~') && fieldsRow.v[k] === 'Rope bonding, blindfold, slow Sunday');
-  const hasTa = fkeys.some(k => k.startsWith('day2~') && fieldsRow.v[k] === 'Aftercare: warm cocoa, cuddles, hair brushing');
-  check('server: day2 text field stored under stable data-dhk key', hasTyped);
-  check('server: day2 textarea stored under stable data-dhk key', hasTa);
+  const hasTyped = fkeys.some(k => k.startsWith(newId + '~') && fieldsRow.v[k] === 'Rope bonding, blindfold, slow Sunday');
+  const hasTa = fkeys.some(k => k.startsWith(newId + '~') && fieldsRow.v[k] === 'Aftercare: warm cocoa, cuddles, hair brushing');
+  check(`server: ${newId} text field stored under stable data-dhk key`, hasTyped);
+  check(`server: ${newId} textarea stored under stable data-dhk key`, hasTa);
 
   /* ================= DEVICE B (fresh, empty storage) ================= */
   const B = bootDevice('B');
   await B.w.CloudStore.ready;
-  check('device B: cloud mirror received day2 before login', B.w.CloudStore.days().some(d => d.id === 'day2'));
+  check(`device B: cloud mirror received ${newId} before login`, B.w.CloudStore.days().some(d => d.id === newId));
   B.$('#password-input').value = 'Deepnectar@1612@';
   B.$('#login-btn').click();
   await wait(600);
 
-  const day2B = B.doc.getElementById('day2');
-  check('device B: saved day restored from cloud after login', !!day2B);
-  if (day2B) {
-    const inputsB = Array.from(day2B.querySelectorAll('input[type="text"], textarea'));
+  const dayNewB = B.doc.getElementById(newId);
+  check('device B: saved day restored from cloud after login', !!dayNewB);
+  if (dayNewB) {
+    const inputsB = Array.from(dayNewB.querySelectorAll('input[type="text"], textarea'));
     const valsB = inputsB.map(el => el.value);
     check('device B: SAME text field value synced', valsB.includes('Rope bonding, blindfold, slow Sunday'));
     check('device B: SAME textarea value synced', valsB.includes('Aftercare: warm cocoa, cuddles, hair brushing'));
-    const cbB = day2B.querySelector('input[type="checkbox"]');
+    const cbB = dayNewB.querySelector('input[type="checkbox"]');
     check('device B: checklist tick synced', !!cbB && cbB.checked === true);
   }
 
@@ -153,7 +180,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   /* replay into B DOM exactly as resyncFromCloud would */
   B.w.eval('void 0');
   const applyFn = () => {
-    const el = day2B.querySelectorAll('input[type="text"]')[0];
+    const el = dayNewB.querySelectorAll('input[type="text"]')[0];
     return el;
   };
   /* simulate the focus-refresh replay by re-running loadSaved through CloudStore */
@@ -161,13 +188,13 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   check('device B: cloud mirror holds the edited sentence', Object.values(bFields).includes('Added: feathers & ice'));
 
   /* ================= deletion syncs too ================= */
-  const delBtn = day2A.querySelector('.delete-day-btn');
+  const delBtn = dayNewA.querySelector('.delete-day-btn');
   if (delBtn) delBtn.click();
   await wait(1500);
   const daysAfterDel = (serverRows.find(r => r.k === 'days') || {}).v || [];
-  check('server: deleted day removed from cloud list', !daysAfterDel.some(d => d.id === 'day2'));
+  check('server: deleted day removed from cloud list', !daysAfterDel.some(d => d.id === newId));
   await B.w.CloudStore.refresh();
-  check('device B: mirror no longer contains deleted day', !B.w.CloudStore.days().some(d => d.id === 'day2'));
+  check('device B: mirror no longer contains deleted day', !B.w.CloudStore.days().some(d => d.id === newId));
 
   console.log('runtime errors A:', A.errors.slice(0, 3));
   console.log('runtime errors B:', B.errors.slice(0, 3));

@@ -1222,6 +1222,9 @@
   };
   window.addEventListener('focus', resyncFromCloud);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) resyncFromCloud(); });
+  /* v4.13d DH — realtime: when the OTHER device saves, replay its newest state
+     into this DOM within ~1 s without waiting for a tab-focus event. */
+  try { if (window.CloudStore && typeof window.CloudStore.onChange === 'function') window.CloudStore.onChange(resyncFromCloud); } catch { /* ignore */ }
 
   /* ---------- v3.4 DH: hoisted helpers (declared here, used above) ----------
      These two were previously declared further down the file as `const`s while
@@ -2160,6 +2163,21 @@
     } catch (e) { console.error('[days] saveDays threw:', e); }
   };
   window.dhPersistDays = persistDays;   // used by js/cloud.js flush path & console recovery
+
+  /* v4.13d DH — cross-device sync guarantee hook for js/cloud.js:
+     before any cloud write is merged & pushed, collect the FRESHEST values
+     straight from this device's live DOM (fields + day pages). This makes
+     "what you see on screen right now" always win per-key, so a Save on one
+     phone can never push an older in-memory copy over the other phone's
+     newest data, and detached-day values are unioned rather than dropped. */
+  window.dhCollectFresh = key => {
+    try {
+      if (key === 'fields')  return collectState();
+      if (key === 'days')    return collectDays().map(d => ({ id: d.id, html: d.html, updatedAt: Date.now() }));
+      if (key === 'accepts') return collectAccepts();
+    } catch { /* DOM mid-mutation — caller keeps its own snapshot */ }
+    return null;
+  };
   /* NOTE: addDayPage() and ensureSignAccepts() were MOVED UP with bootContract()
      (see the hoisted-helpers block near the signature code) so they are fully
      initialised before applySignatures()/boot run — this fixes the TDZ crash
