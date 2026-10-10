@@ -1338,6 +1338,10 @@
        (reload / re-login / realtime pull / other device) refuses to re-attach
        this day id. New days created afterwards are untouched. */
     addDeleted(dayId);
+    /* v4.13e DH — push the EXPLICIT tombstone to the shared cloud 'deleted'
+       key so this deletion sticks permanently on EVERY device (absence from a
+       day list is never treated as a deletion any more). */
+    try { if (window.CloudStore && typeof window.CloudStore.saveDeleted === 'function') window.CloudStore.saveDeleted([dayId]); } catch { /* offline — local tombstone + next flush still deliver it */ }
     persistDays();                       // cloud day list no longer contains it
     save();
     refreshAiDayOptions();               // keep the AI target list in sync
@@ -1369,6 +1373,8 @@
        mirror / Supabase receive the pruned list and nothing ever re-attaches
        these days on reload, re-login or from the other device. */
     addDeleted(dayPages().map(p => p.id));
+    /* v4.13e DH — push the wiped ids as EXPLICIT cloud tombstones too */
+    try { if (window.CloudStore && typeof window.CloudStore.saveDeleted === 'function') window.CloudStore.saveDeleted(dayPages().map(p => p.id)); } catch { /* offline guard: local tombstones still apply, flush retries */ }
     dayPages().forEach(p => {
       const dayId = p.id;
       const accepts = readAccepts();
@@ -2170,10 +2176,17 @@
      "what you see on screen right now" always win per-key, so a Save on one
      phone can never push an older in-memory copy over the other phone's
      newest data, and detached-day values are unioned rather than dropped. */
+  /* v4.13e DH — collectDays() is the AUTHORITATIVE day snapshot: every page
+     carries updatedAt/createdAt stamps (persistDays does), so cloud.js can do
+     true per-day LAST-WRITER-WINS merges. If persistDays hasn't booted yet we
+     return null → caller keeps its own snapshot instead of mixing in an
+     UNSTAMPED list that would corrupt the timestamp comparison. */
   window.dhCollectFresh = key => {
     try {
       if (key === 'fields')  return collectState();
-      if (key === 'days')    return collectDays().map(d => ({ id: d.id, html: d.html, updatedAt: Date.now() }));
+      if (key === 'days')    return (typeof persistDays === 'function' && typeof window.dhPersistDays === 'function')
+        ? collectDays().map(d => ({ id: d.id, html: d.html, createdAt: createdAtFor(d.id) || null, updatedAt: Date.now() }))
+        : null;
       if (key === 'accepts') return collectAccepts();
     } catch { /* DOM mid-mutation — caller keeps its own snapshot */ }
     return null;
