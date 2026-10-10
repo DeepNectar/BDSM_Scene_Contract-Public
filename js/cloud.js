@@ -123,10 +123,19 @@
     } catch { return null; }
   };
 
+  /* v4.13c DH — app.js writes its offline day snapshot under 'dhContract.days.v1'
+     as {list:[…]}; the durable mirror uses the SAME key with a flat {days:[…]}
+     shape. The old reader only understood {list} — so on devices whose cached
+     app.js still wrote the flat shape, readLocalDays() returned null and the
+     locally saved days silently vanished from every merge/restore path.
+     Now BOTH shapes are understood → a saved day can never be missed. */
   const readLocalDays = () => {
     try {
       const raw = JSON.parse(localStorage.getItem(LS_DAYS_KEY));
-      return (raw && Array.isArray(raw.list)) ? raw.list : null;
+      if (raw && Array.isArray(raw.list)) return raw.list;
+      if (Array.isArray(raw)) return raw;                       // legacy: plain array
+      if (raw && Array.isArray(raw.days)) return raw.days;      // flat mirror shape
+      return null;
     } catch { return null; }
   };
   const readLocalFields = () => {
