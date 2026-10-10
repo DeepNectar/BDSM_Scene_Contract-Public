@@ -9,13 +9,13 @@
    ============================================================ */
 'use strict';
 
-const CACHE_NAME = 'dh-contract-v49';
+const CACHE_NAME = 'dh-contract-v50';
 const APP_SHELL = [
   './',
   './index.html',
   './css/styles.css?v=48',
   './js/supabase-config.js',
-  './js/cloud.js?v=43',
+  './js/cloud.js?v=44',
   './js/logbook.js?v=16',
   './js/app.js?v=50',
   './manifest.webmanifest',
