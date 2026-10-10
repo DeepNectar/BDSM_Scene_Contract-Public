@@ -1251,6 +1251,9 @@
   };
   window.addEventListener('focus', resyncFromCloud);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) resyncFromCloud(); });
+  /* v4.13d DH — realtime: when the OTHER device saves, replay its newest state
+     into this DOM within ~1 s without waiting for a tab-focus event. */
+  try { if (window.CloudStore && typeof window.CloudStore.onChange === 'function') window.CloudStore.onChange(resyncFromCloud); } catch { /* ignore */ }
 
   /* ---------- v3.4 DH: hoisted helpers (declared here, used above) ----------
      These two were previously declared further down the file as `const`s while
@@ -1364,6 +1367,10 @@
        (reload / re-login / realtime pull / other device) refuses to re-attach
        this day id. New days created afterwards are untouched. */
     addDeleted(dayId);
+    /* v4.13e DH — push the EXPLICIT tombstone to the shared cloud 'deleted'
+       key so this deletion sticks permanently on EVERY device (absence from a
+       day list is never treated as a deletion any more). */
+    try { if (window.CloudStore && typeof window.CloudStore.saveDeleted === 'function') window.CloudStore.saveDeleted([dayId]); } catch { /* offline — local tombstone + next flush still deliver it */ }
     persistDays();                       // cloud day list no longer contains it
     save();
     refreshAiDayOptions();               // keep the AI target list in sync
@@ -1395,6 +1402,8 @@
        mirror / Supabase receive the pruned list and nothing ever re-attaches
        these days on reload, re-login or from the other device. */
     addDeleted(dayPages().map(p => p.id));
+    /* v4.13e DH — push the wiped ids as EXPLICIT cloud tombstones too */
+    try { if (window.CloudStore && typeof window.CloudStore.saveDeleted === 'function') window.CloudStore.saveDeleted(dayPages().map(p => p.id)); } catch { /* offline guard: local tombstones still apply, flush retries */ }
     dayPages().forEach(p => {
       const dayId = p.id;
       const accepts = readAccepts();
@@ -2189,6 +2198,28 @@
     } catch (e) { console.error('[days] saveDays threw:', e); }
   };
   window.dhPersistDays = persistDays;   // used by js/cloud.js flush path & console recovery
+
+  /* v4.13d DH — cross-device sync guarantee hook for js/cloud.js:
+     before any cloud write is merged & pushed, collect the FRESHEST values
+     straight from this device's live DOM (fields + day pages). This makes
+     "what you see on screen right now" always win per-key, so a Save on one
+     phone can never push an older in-memory copy over the other phone's
+     newest data, and detached-day values are unioned rather than dropped. */
+  /* v4.13e DH — collectDays() is the AUTHORITATIVE day snapshot: every page
+     carries updatedAt/createdAt stamps (persistDays does), so cloud.js can do
+     true per-day LAST-WRITER-WINS merges. If persistDays hasn't booted yet we
+     return null → caller keeps its own snapshot instead of mixing in an
+     UNSTAMPED list that would corrupt the timestamp comparison. */
+  window.dhCollectFresh = key => {
+    try {
+      if (key === 'fields')  return collectState();
+      if (key === 'days')    return (typeof persistDays === 'function' && typeof window.dhPersistDays === 'function')
+        ? collectDays().map(d => ({ id: d.id, html: d.html, createdAt: createdAtFor(d.id) || null, updatedAt: Date.now() }))
+        : null;
+      if (key === 'accepts') return collectAccepts();
+    } catch { /* DOM mid-mutation — caller keeps its own snapshot */ }
+    return null;
+  };
   /* NOTE: addDayPage() and ensureSignAccepts() were MOVED UP with bootContract()
      (see the hoisted-helpers block near the signature code) so they are fully
      initialised before applySignatures()/boot run — this fixes the TDZ crash
