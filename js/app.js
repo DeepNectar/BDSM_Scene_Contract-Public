@@ -463,7 +463,13 @@
     clearTimeout(saveTimer);
     const push = () => {
       const p = window.CloudStore.saveFields(collectState());
-      if (p && typeof p.catch === 'function') p.catch(() => {});   // v3.9: never an unhandled rejection
+      /* v4.13b DH — once the snapshot containing the current DOM values has
+         been handed to the cloud layer, the fields are no longer "dirty" and
+         realtime applies may touch them again. */
+      const clearDirty = () => $$('#main-contract [data-dh-dirty="1"]')
+        .forEach(el => { try { delete el.dataset.dhDirty; } catch { /* ignore */ } });
+      if (p && typeof p.then === 'function') p.then(clearDirty, () => {});
+      else clearDirty();
       return p;
     };
     if (immediate === true || immediate === 'sync' || (immediate && immediate.type)) {
@@ -571,6 +577,11 @@
       const slot = el.closest('.initials-slot');
       if (slot?.classList.contains('slot-filled')) return;   // sealed signature owns this field
       if (el.readOnly) return;                               // accept-date pills own their value
+      /* v4.13b DH — never overwrite a field the user is actively editing on THIS
+         device right now (focused input, or one with unsaved keystrokes): that
+         race used to erase freshly typed text mid-edit when a realtime pull landed. */
+      if (el === document.activeElement) return;
+      if (el.dataset && el.dataset.dhDirty === '1') return;
       /* resolve the stored value across ALL historical key schemes:
          v4.13 stable identity key → legacy element-id key → legacy DOM-path key.
          First hit wins, so data saved by ANY older build still loads. */
@@ -592,7 +603,7 @@
       for (const k of candidates) {
         if (k in data) { val = data[k]; found = true; break; }
       }
-      if (!found) continue;
+      if (!found) return;   // v4.13b DH — this is a forEach callback: `return` skips to the next field (a bare `continue` was a syntax error that killed the whole script)
       if (el.type === 'checkbox') el.checked = !!val;
       else el.value = val;
       if (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text' && el.maxLength === -1)) growInput(el);
@@ -729,6 +740,14 @@
       }
       setCreatedBadge($('#' + d.id), createdAtFor(d.id) || scraped);
     });
+    /* v4.13b DH — the static Day 1 page ships in index.html and must ALWAYS be
+       part of the cloud day list, even on a brand-new device that has never
+       saved it yet. Without this, restoreDays() saw a cloud list missing day1
+       and DELETED the static page ("keep" set guard above) — the contract lost
+       its founding day across devices. */
+    if ($('#day1') && !list.some(x => x && x.id === 'day1')) {
+      list = list.concat([{ id: 'day1', html: $('#day1').outerHTML }]);
+    }
     loadSaved();                                       // replay field values into restored days
     syncAllLocks();
   };
@@ -880,6 +899,15 @@
 
   /* gentle autosave — every change writes instantly, plus safety nets */
   ['input', 'change'].forEach(ev => document.addEventListener(ev, writeStore, true));
+  /* v4.13b DH — mark the field "dirty" from keystroke until its value has been
+     pushed to the cloud; applyFieldData() skips dirty/focused fields so a
+     realtime pull can never overwrite what you are typing right now. */
+  document.addEventListener('input', e => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) {
+      try { t.dataset.dhDirty = '1'; } catch { /* ignore */ }
+    }
+  }, true);
   setInterval(() => { if (!pageVisible()) writeStore(); }, 20000);   // background top-up (PWA / tab switch)
   document.addEventListener('visibilitychange', () => { if (!pageVisible()) writeStore(); });
   window.addEventListener('pagehide', writeStore);
