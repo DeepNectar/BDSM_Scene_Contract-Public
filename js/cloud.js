@@ -107,18 +107,21 @@
   const LS_STORE_KEY = 'dhContract.fields.v1';
   /* v4.1 DH — our OWN durable mirror copy (written on every change, so even
      if app.js's snapshot logic is bypassed, the days survive reload/login) */
-  const LS_MIRROR_KEY = 'dhContract.cloud.v41';
+  /* v4.13e DH — bumped: the old v41 mirror key is retired so every device
+     re-seeds its durable copy from the (authoritative) cloud instead of
+     trusting a possibly-stale cached mirror written by older builds. */
+  const LS_MIRROR_KEY = 'dhContract.cloud.v413e';
 
   const writeMirrorLocal = () => {
-    try {
-      localStorage.setItem(LS_MIRROR_KEY, JSON.stringify({
-        fields: mem.fields, accepts: mem.accepts, days: mem.days, ts: Date.now()
-      }));
-    } catch { /* storage full — cloud copy still authoritative */ }
+    safeSet(LS_MIRROR_KEY, JSON.stringify({
+      fields: mem.fields, accepts: mem.accepts, days: mem.days, ts: Date.now()
+    }));
+    /* storage may be unavailable (private mode / opaque origin) — cloud copy
+       is still authoritative; never let this throw into the save path */
   };
   const readMirrorLocal = () => {
     try {
-      const m = JSON.parse(localStorage.getItem(LS_MIRROR_KEY));
+      const m = JSON.parse(safeGet(LS_MIRROR_KEY));
       return (m && typeof m === 'object') ? m : null;
     } catch { return null; }
   };
@@ -131,7 +134,7 @@
      Now BOTH shapes are understood → a saved day can never be missed. */
   const readLocalDays = () => {
     try {
-      const raw = JSON.parse(localStorage.getItem(LS_DAYS_KEY));
+      const raw = JSON.parse(safeGet(LS_DAYS_KEY));
       if (raw && Array.isArray(raw.list)) return raw.list;
       if (Array.isArray(raw)) return raw;                       // legacy: plain array
       if (raw && Array.isArray(raw.days)) return raw.days;      // flat mirror shape
@@ -139,7 +142,7 @@
     } catch { return null; }
   };
   const readLocalFields = () => {
-    try { return JSON.parse(localStorage.getItem(LS_STORE_KEY)) || {}; } catch { return {}; }
+    try { return JSON.parse(safeGet(LS_STORE_KEY)) || {}; } catch { return {}; }
   };
   /* v4.12 DH — permanent DELETED-DAY GUARD ("once ✖ Delete day is done, that
      day must NEVER come back — not on this device, not on the other phone").
@@ -150,34 +153,57 @@
      durable mirrors — the old union-merge used to resurrect deleted days from
      stale snapshots. */
   const LS_DELETED_KEY = 'dhContract.deleted.v1';
+  /* tombstones are {id → deletion-time-ms}. A day may only stay hidden while
+     its tombstone is NEWER than the newest time that day was written anywhere
+     (updatedAt on the cloud/local copies). Re-creating Day N after deleting it
+     therefore always wins — the fresh page carries a newer updatedAt and the
+     stale tombstone is lifted automatically. */
+  const normDelMap = raw => {
+    const m = {};
+    const obj = (() => {
+      try { return JSON.parse(raw); } catch { return null; }
+    })();
+    if (obj && Array.isArray(obj.ids)) obj.ids.forEach(id => { if (typeof id === 'string') m[id] = +obj.ts || Date.now(); });
+    else if (Array.isArray(obj)) obj.forEach(id => { if (typeof id === 'string') m[id] = Date.now(); });
+    else if (obj && typeof obj === 'object') Object.entries(obj).forEach(([id, t]) => { if (typeof t === 'number') m[id] = t; });
+    return m;
+  };
   const readDeletedIds = () => {
-    let ids = [];
-    try {
-      const raw = JSON.parse(localStorage.getItem(LS_DELETED_KEY));
-      ids = (raw && Array.isArray(raw.ids)) ? raw.ids : (Array.isArray(raw) ? raw : []);
-    } catch { ids = []; }
+    let map = normDelMap(safeGet(LS_DELETED_KEY));
     try {
       if (typeof window.dhReadDeleted === 'function') {
-        const extra = window.dhReadDeleted();
-        if (Array.isArray(extra)) ids = ids.concat(extra);
+        const extra = window.dhReadDeleted();          // legacy array form
+        if (Array.isArray(extra)) extra.forEach(id => { if (typeof id === 'string' && !(id in map)) map[id] = Date.now(); });
       }
     } catch { /* app.js not booted yet — raw key still guards */ }
+    /* v4.13e DH — CLOUD tombstones: deletions performed on the other device
+       arrive under the 'deleted' key ({id:epochMs}) via every pull & realtime
+       push, so "✖ Delete day" on phone A now sticks permanently on phone B —
+       even if B never saw the moment of deletion live. */
+    try {
+      const r = lastServerRows.find(x => x && x.k === 'deleted');
+      if (r && r.v && typeof r.v === 'object') Object.entries(r.v).forEach(([id, t]) => {
+        if (typeof id === 'string' && /^day\d+$/.test(id) && typeof t === 'number' && !(id in map)) map[id] = t;
+      });
+    } catch { /* no server rows yet */ }
     const set = new Set();
-    ids.forEach(id => { if (typeof id === 'string' && /^day\d+$/.test(id)) set.add(id); });
+    Object.keys(map).forEach(id => { if (/^day\d+$/.test(id)) set.add(id); });
+    set._map = map;                                    // timestamps ride along for pruneDeleted
     return set;
   };
   /* record deletions observed in ANY list into the shared tombstone store too */
-  const rememberDeleted = ids => {
+  const rememberDeleted = (ids, when) => {
     const arr = [].concat(ids || []).filter(id => typeof id === 'string' && /^day\d+$/.test(id));
     if (!arr.length) return;
+    const ts = +when || Date.now();
     try {
       if (typeof window.dhAddDeleted === 'function') { window.dhAddDeleted(arr); return; }
     } catch { /* fall through to raw write */ }
     try {
-      const raw = JSON.parse(localStorage.getItem(LS_DELETED_KEY));
-      const cur = new Set((raw && Array.isArray(raw.ids)) ? raw.ids : []);
+      const raw = safeGet(LS_DELETED_KEY);
+      const cur = new Set(Object.keys(normDelMap(raw)));
       arr.forEach(id => cur.add(id));
-      localStorage.setItem(LS_DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() }));
+      safeSet(LS_DELETED_KEY, JSON.stringify({ ids: [...cur], ts }));
     } catch { /* storage unavailable — in-session guard still applies */ }
   };
   /* v4.12b DH — prune tombstoned days out of this device's durable local
@@ -188,37 +214,104 @@
     const del = readDeletedIds();
     if (!del.size) return;
     try {
-      const raw = JSON.parse(localStorage.getItem(LS_DAYS_KEY));
+      const raw = JSON.parse(safeGet(LS_DAYS_KEY));
       if (raw && Array.isArray(raw.list)) {
         const kept = raw.list.filter(d => d && d.id && !del.has(d.id));
         if (kept.length !== raw.list.length)
-          localStorage.setItem(LS_DAYS_KEY, JSON.stringify({ list: kept, ts: Date.now() }));
+          safeSet(LS_DAYS_KEY, JSON.stringify({ list: kept, ts: Date.now() }));
       }
     } catch { /* ignore */ }
     try {
-      const m = JSON.parse(localStorage.getItem(LS_MIRROR_KEY));
+      const m = JSON.parse(safeGet(LS_MIRROR_KEY));
       if (m && Array.isArray(m.days)) {
         const kept = m.days.filter(d => d && d.id && !del.has(d.id));
-        if (kept.length !== m.days.length) { m.days = kept; m.ts = Date.now(); localStorage.setItem(LS_MIRROR_KEY, JSON.stringify(m)); }
+        if (kept.length !== m.days.length) { m.days = kept; m.ts = Date.now(); safeSet(LS_MIRROR_KEY, JSON.stringify(m)); }
       }
     } catch { /* ignore */ }
   };
-  /* drop every tombstoned day from a list (used on ALL inbound & outbound lists) */
+  /* drop every tombstoned day from a list (used on ALL inbound & outbound lists).
+     v4.13e DH — a tombstone only hides a day while it is NEWER than that day's
+     own last write; a page re-created after deletion (newer updatedAt) wins and
+     its stale tombstone is lifted locally + pushed up for every device. */
   const pruneDeleted = list => {
+    const arr = Array.isArray(list) ? list : [];
     const del = readDeletedIds();
-    if (!del.size) return list;
-    return (Array.isArray(list) ? list : []).filter(d => d && d.id && !del.has(d.id));
+    if (!del.size) return arr;
+    const map = del._map || {};
+    const lifted = [];
+    const out = arr.filter(d => {
+      if (!(d && d.id && del.has(d.id))) return true;
+      const written = +(d.updatedAt || d.createdAt || 0);
+      if (written > (map[d.id] || 0)) { lifted.push(d.id); return true; }   // fresher than the deletion → keep
+      return false;
+    });
+    if (lifted.length) {
+      try { if (typeof window.dhLiftDeleted === 'function') window.dhLiftDeleted(lifted); } catch { /* ignore */ }
+    }
+    return out;
   };
 
   /* merge two [{id,html}] lists — cloud wins on id conflicts, extras kept.
      v4.12 DH — tombstoned (deleted) days are pruned from BOTH sides first. */
+  const dayNum = id => (parseInt((/^day(\d+)/.exec(id || '') || [])[1], 10) || 0);
+  const sortDays = list => list.slice().sort((a, b) => dayNum(a.id) - dayNum(b.id));
   const mergeDays = (cloudList, localList) => {
     const map = new Map();
     pruneDeleted(Array.isArray(localList) ? localList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
     pruneDeleted(Array.isArray(cloudList) ? cloudList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
-    return Array.from(map.values())
-      .sort((a, b) => ((parseInt((/^day(\d+)/.exec(a.id) || [])[1], 10) || 0) -
-                       (parseInt((/^day(\d+)/.exec(b.id) || [])[1], 10) || 0)));
+    return sortDays(Array.from(map.values()));
+  };
+
+  /* v4.13f DH — localStorage HARDENING (the real root cause of "nothing
+     syncs"): jsdom/privacy-mode/opaque-origin windows THROW a SecurityError
+     from EVERY localStorage access — not just JSON.parse. Several readers
+     here had their try/catch INSIDE the JSON.parse expression, so the throw
+     escaped and killed load(), refresh(), persistDays() and every cloud push
+     silently. safeGet/safeSet never throw on ANY engine. */
+  const safeGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+  const safeSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } };
+
+  /* ============================================================
+     v4.13e DH — THE CROSS-DEVICE SYNC GUARANTEE ("saved data still
+     doesn't appear on the other device"). Two silent data-loss paths
+     were killing sync even though every write landed in Supabase:
+
+     (A) ABSENCE ≠ DELETION. applyRows() treated ANY day missing from
+         the inbound cloud list as deleted and tombstoned it locally.
+         A device whose OWN push raced/failed therefore "tombstoned"
+         perfectly healthy days that only the other phone had saved —
+         they vanished forever on that device and its next save pushed
+         the pruned list back to the cloud, wiping them for EVERYONE.
+         Deletions are now EXPLICIT ONLY: app.js's ✖ Delete / 🧹 Wipe
+         buttons write a timestamped tombstone AND push it to the cloud
+         key 'deleted'. Absence from any list never deletes anything.
+
+     (B) REPLACE-WINS PER KEY. mem.fields/mem.accepts were overwritten
+         wholesale by whichever side arrived last, so an older cloud
+         pull could clobber newer locally-typed values (and vice versa).
+         All merges are now per-key/per-day LAST-WRITER-WINS driven by
+         updatedAt timestamps carried inside the payloads themselves —
+         order of arrival no longer matters.
+     ============================================================ */
+  const tsOf = x => { const t = Date.parse(x); return Number.isFinite(t) ? t : 0; };
+  const stampNow = () => {
+    const iso = new Date().toISOString();
+    mem._ts = mem._ts || {};
+    mem._ts[iso] = 1;
+    /* keep at most 500 stamps; drop ones older than 7 days */
+    const cutoff = Date.now() - 7 * 864e5;
+    Object.keys(mem._ts).forEach(k => { if (Date.parse(k) < cutoff) delete mem._ts[k]; });
+    return iso;
+  };
+  const newestStamp = obj => {
+    let best = 0;
+    Object.keys(obj || {}).forEach(k => { const t = tsOf(k); if (t > best) best = t; });
+    return best;
+  };
+  /* server-side updated_at fallback for legacy rows written before v4.13e */
+  const rowUpdatedAt = k => {
+    const r = lastServerRows.find(x => x && x.k === k);
+    return r ? tsOf(r.updated_at) : 0;
   };
 
   /* v3.9 — ONE bullet-proof write path:
@@ -255,10 +348,10 @@
   const LS_WRITER_KEY = 'dhContract.deviceTag.v1';
   const deviceTag = (() => {
     try {
-      let t = localStorage.getItem(LS_WRITER_KEY);
+      let t = safeGet(LS_WRITER_KEY);
       if (!t) {
         t = 'dev-' + Math.random().toString(36).slice(2, 8) + '-' + Date.now().toString(36);
-        localStorage.setItem(LS_WRITER_KEY, t);
+        safeSet(LS_WRITER_KEY, t);
       }
       return t;
     } catch { return 'unknown'; }
@@ -269,24 +362,20 @@
     return runWrite('upsert ' + k, () => sb.from('contract_state').upsert({ k, v, last_writer: deviceTag }));
   };
 
-  /* v4.13d DH — THE "SAVE WIPES THE OTHER DEVICE'S EDITS" BUG (cross-device
+  /* v4.13d/e DH — THE "SAVE WIPES THE OTHER DEVICE'S EDITS" BUG (cross-device
      sync guarantee): every writer used to REPLACE its whole cloud key with
-     this device's in-memory copy. If this tab had booted from a stale mirror
-     (offline at boot, missed realtime push, old cache), pressing 💾 Save
-     silently OVERWROTE newer values the other phone had just written — and
-     worse, saveFields() replaced mem.fields with collectState(), which only
-     sees fields CURRENTLY IN THIS DOM, so values belonging to days not
-     attached here were dropped from the mirror entirely and then pushed to
-     the cloud missing. Now every write is a LAST-WRITER-WINS MERGE against
-     the freshest data we hold (server row ∪ local mirror ∪ this snapshot),
-     with this device's newest snapshot winning per-key. Nothing another
-     device saved can ever be erased by a save on this one; deletions still
-     stick because they are tombstone-driven (see pruneDeleted), not
-     absence-driven. */
+     this device's in-memory copy, and merges were arrival-order-dependent.
+     Now every write is a per-key / per-day LAST-WRITER-WINS merge driven by
+     updatedAt timestamps carried INSIDE the payloads (server row ∪ local
+     mirror ∪ local snapshot ∪ this device's fresh DOM), so nothing another
+     device saved can ever be erased or lost by a save on this one — no
+     matter which write lands first. Deletions stick because they are
+     EXPLICIT tombstones ('deleted' key + local store), never absence-driven. */
   const freshLocal = (key, snap) => {
     try {
       if (typeof window.dhCollectFresh === 'function') {
         const f = window.dhCollectFresh(key);
+        if (Array.isArray(f) && Array.isArray(snap)) return snap.concat(f);   // days: newest ts wins later
         if (f && typeof f === 'object') return Object.assign({}, snap || {}, f);
       }
     } catch { /* app.js not booted yet — fall back to caller snapshot */ }
@@ -296,30 +385,118 @@
     const i = lastServerRows.findIndex(r => r && r.k === k);
     return i >= 0 ? lastServerRows[i].v : null;
   };
+  /* day-level LWW: highest updatedAt wins per id; ties → later list wins */
+  const mergeDaysLWW = lists => {
+    const map = new Map();
+    lists.forEach(list => {
+      if (!Array.isArray(list)) return;
+      pruneDeleted(list).forEach(d => {
+        if (!d || !d.id || !d.html) return;
+        const prev = map.get(d.id);
+        if (!prev || +(d.updatedAt || 0) >= +(prev.updatedAt || 0)) map.set(d.id, d);
+      });
+    });
+    return sortDays(Array.from(map.values()));
+  };
+  /* field/accept-level LWW across ordered sources (oldest → newest) */
+  const mergeFieldsLWW = sources => {
+    const out = {};
+    const stampOf = obj => { const t = +(obj && obj.__ts); return Number.isFinite(t) ? t : 0; };
+    sources.forEach(src => {
+      if (!src || typeof src !== 'object') return;
+      const s = stampOf(src);
+      Object.keys(src).forEach(k => {
+        if (k === '__ts') return;
+        const cur = out[k];
+        if (!cur || s >= cur.s) out[k] = { v: src[k], s: Math.max(s, cur ? cur.s : 0) };
+      });
+    });
+    const merged = {};
+    Object.keys(out).forEach(k => { merged[k] = out[k].v; });
+    return merged;
+  };
   const mergeKeyValues = (k, snap) => {
     const localMirror = (readMirrorLocal() || {})[k];
     const server = serverRowVal(k);
     if (k === 'days') {
-      /* id-level last-writer-wins: server copy → older local copies → ours */
-      const map = new Map();
-      [server, readLocalDays(), (localMirror || []).days || localMirror, snap]
-        .forEach(list => {
-          if (!Array.isArray(list)) return;
-          pruneDeleted(list).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
-        });
-      return Array.from(map.values()).sort((a, b) =>
-        ((parseInt((/^day(\d+)/.exec(a.id) || [])[1], 10) || 0) -
-         (parseInt((/^day(\d+)/.exec(b.id) || [])[1], 10) || 0)));
+      /* oldest→newest order: server, durable mirror, app snapshot, our live DOM */
+      return mergeDaysLWW([server, readLocalDays(),
+                           Array.isArray(localMirror) ? localMirror : ((localMirror || {}).days || []),
+                           snap]);
     }
-    /* plain object keys ('fields' / 'accepts'): union, ours wins per key */
-    return Object.assign({}, server || {}, localMirror || {}, snap || {});
+    /* plain object keys ('fields' / 'accepts'): per-key LWW using __ts stamps;
+       legacy unstamped payloads fall back to their row's updated_at */
+    const fb = rowUpdatedAt(k);
+    const st = o => (o && typeof o.__ts === 'number' ? o.__ts : fb);
+    return mergeFieldsLWW([server, localMirror, snap].map(o => {
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return o;
+      const c = Object.assign({}, o); c.__ts = st(o); return c;
+    }));
   };
   const upsertMerged = (k, snap) => {
     if (!sb) return Promise.resolve(false);
-    const v = mergeKeyValues(k, freshLocal(k, snap));
-    mem[k] = v;                       // mirror now holds the merged truth too
-    writeMirrorLocal();
-    return upsert(k, v);
+    /* v4.13f DH — merge against the SERVER'S CURRENT ROW, not our possibly
+       stale mirror: re-pull first so a save can never overwrite another
+       device's newer values that we have not heard about yet (realtime can
+       lag or be blocked by flaky networks). If the pull fails we still push
+       the union with whatever server rows we last saw — never a blind replace. */
+    const pre = sb ? fetchState().catch(() => null) : Promise.resolve(null);
+    return pre.then(rows => {
+      if (rows) applyRowsSilent(rows);
+      let v = mergeKeyValues(k, freshLocal(k, snap));
+      /* stamp the payload so every device merges by REAL write time, not arrival */
+      if (k === 'days') v = v.map(d => Object.assign({}, d, { updatedAt: +(d.updatedAt) || Date.now() }));
+      else { v = Object.assign({}, v); v.__ts = Date.now(); }
+      mem[k] = v;                       // mirror now holds the merged truth too
+      writeMirrorLocal();
+      return upsert(k, v);
+    });
+  };
+
+  /* v4.13f DH — hoisted: shared by applyRows() AND the pre-write silent merge */
+  const withTs = (o, t) => { if (!o || typeof o !== 'object' || Array.isArray(o)) return o; const c = Object.assign({}, o); if (typeof c.__ts !== 'number') c.__ts = t; return c; };
+
+  /* apply inbound rows to the mirror WITHOUT the upward-re-seed side effects
+     (used right before a merged write; the full applyRows() keeps its old
+     behaviour for pulls/realtime where adoption-upward is desirable). */
+  const applyRowsSilent = rows => {
+    (rows || []).forEach(r => {
+      if (!r || !r.k) return;
+      if (r.k === 'fields' && r.v && typeof r.v === 'object') {
+        mem.fields = mergeFieldsLWW([withTs(mem.fields, 0), withTs(r.v, tsOf(r.updated_at))]);
+      }
+      if (r.k === 'accepts' && r.v && typeof r.v === 'object') {
+        mem.accepts = mergeFieldsLWW([withTs(mem.accepts, 0), withTs(r.v, tsOf(r.updated_at))]);
+      }
+      if (r.k === 'days' && Array.isArray(r.v)) {
+        mem.days = mergeDaysLWW([mem.days, r.v]);
+      }
+      if (r.k === 'deleted' && r.v && typeof r.v === 'object' && !Array.isArray(r.v)) {
+        mem.deleted = Object.assign({}, mem.deleted || {}, r.v);
+      }
+    });
+    lastServerRows = Array.isArray(rows) ? rows.slice() : lastServerRows;
+  };
+
+  /* ---------- v4.13e DH — CLOUD DELETED-DAY TOMBSTONES (key 'deleted') ----------
+     {dayId: epochMs}. Written whenever THIS device deletes/wipes a day (app.js
+     calls CloudStore.saveDeleted via dhAddDeleted hook) and merged upward on
+     every pull. Every device honours them in pruneDeleted(), so "✖ Delete day"
+     on one phone is permanent on ALL phones — while a day re-created afterwards
+     (newer updatedAt) automatically lifts its stale tombstone everywhere. */
+  const deletedMapFromServer = () => {
+    const r = serverRowVal('deleted');
+    return (r && typeof r === 'object' && !Array.isArray(r)) ? r : {};
+  };
+  const pushDeletedTombstones = () => {
+    if (!sb) return Promise.resolve(false);
+    const local = (() => { try { return normDelMap(safeGet(LS_DELETED_KEY)); } catch { return {}; } })();
+    const extra = (() => { try { return (typeof window.dhReadDeleted === 'function' ? window.dhReadDeleted() : []) || []; } catch { return []; } })();
+    const merged = Object.assign({}, deletedMapFromServer());
+    Object.entries(local).forEach(([id, t]) => { if (!(id in merged) || merged[id] < t) merged[id] = t; });
+    extra.forEach(id => { if (!(id in merged)) merged[id] = Date.now(); });
+    mem.deleted = merged;
+    return upsert('deleted', merged);
   };
 
   /* ---------- v3.8 DH — ALL day pages are saved to the cloud ----------
@@ -351,55 +528,89 @@
   };
 
   const applyRows = (rows) => {
-    /* v4.0 DH — MERGE, never replace-with-empty: whatever is already in the
-       mirror or in this device's localStorage snapshot is preserved, so a day
-       that was saved can always come back on reload/re-login. */
+    /* v4.13e DH — MERGE, never replace-with-empty AND never absence-delete:
+       whatever is already in the mirror or in this device's localStorage
+       snapshot is preserved; days only disappear when an EXPLICIT tombstone
+       (local store or cloud 'deleted' key) says so. */
     const mirrorSnap  = readMirrorLocal();               // v4.1 — our own durable copy
     const localDays   = mergeDays(readLocalDays(), mirrorSnap && mirrorSnap.days);
-    const localFields = Object.assign({}, (mirrorSnap && mirrorSnap.fields) || {}, readLocalFields());
-    const cloud = { fields: null, accepts: null, days: null };
+    const cloud = { fields: null, accepts: null, days: null, deleted: null };
     (rows || []).forEach(r => {
       if (r.k === 'fields')  cloud.fields  = r.v || {};
       if (r.k === 'accepts') cloud.accepts = r.v || {};
       if (r.k === 'days' && Array.isArray(r.v)) cloud.days = r.v;
+      if (r.k === 'deleted' && r.v && typeof r.v === 'object' && !Array.isArray(r.v)) cloud.deleted = r.v;
       /* NOTE: 'wiped' rows are intentionally IGNORED from now on — the
          sticky auto-wipe behaviour is removed (v4.0). */
     });
-    /* v4.12 DH — remember every day id that VANISHED from the authoritative
-       cloud list as deleted (tombstoned): deletions performed on the other
-       device now stick permanently on this one too, even against stale local
-       snapshots / durable mirrors. */
-    if (Array.isArray(cloud.days)) {
-      const cloudIds = new Set(cloud.days.filter(d => d && d.id).map(d => d.id));
-      const gone = [];
-      [...mem.days, ...(localDays || [])].forEach(d => {
-        if (d && /^day\d+$/.test(d.id) && !cloudIds.has(d.id)) gone.push(d.id);
-      });
-      if (gone.length) rememberDeleted(gone);
+    /* v4.13e DH — adopt CLOUD tombstones into this device's local store so a
+       day deleted on the other phone stays deleted here too (explicitly — we
+       no longer treat "missing from the list" as a deletion). */
+    if (cloud.deleted) {
+      mem.deleted = Object.assign({}, mem.deleted || {}, cloud.deleted);
+      const ids = Object.keys(cloud.deleted);
+      if (ids.length) rememberDeleted(ids);
     }
-    mem.days   = pruneDeleted(mergeDays(cloud.days, mergeDays(mem.days, localDays)));
+    /* per-day LAST-WRITER-WINS across server row / durable mirror / app
+       snapshot / live DOM — arrival order can no longer lose data */
+    mem.days = pruneDeleted(mergeDaysLWW([
+      cloud.days,
+      mirrorSnap && mirrorSnap.days,
+      readLocalDays(),
+      mem.days,
+    ]));
     /* v4.12b DH — also scrub tombstoned days out of localStorage snapshots */
     pruneLocalSnapshots();
-    mem.fields = Object.assign({}, localFields, mem.fields || {}, cloud.fields || {});
-    if (cloud.accepts) mem.accepts = cloud.accepts;
-    else if (mirrorSnap && mirrorSnap.accepts) mem.accepts = mirrorSnap.accepts;
+    /* per-field LWW driven by the __ts stamps inside each payload */
+    const fbF = (() => { const r = (rows || []).find(x => x && x.k === 'fields'); return r ? tsOf(r.updated_at) : 0; })();
+    const fbA = (() => { const r = (rows || []).find(x => x && x.k === 'accepts'); return r ? tsOf(r.updated_at) : 0; })();
+    const withTs = (o, t) => { if (!o || typeof o !== 'object' || Array.isArray(o)) return o; const c = Object.assign({}, o); if (typeof c.__ts !== 'number') c.__ts = t; return c; };
+    mem.fields = mergeFieldsLWW([
+      withTs(Object.assign({}, (mirrorSnap && mirrorSnap.fields) || {}, readLocalFields()), 0),
+      withTs(mem.fields, 0),
+      withTs(cloud.fields, fbF),
+    ]);
+    mem.accepts = mergeFieldsLWW([
+      withTs((mirrorSnap && mirrorSnap.accepts) || {}, 0),
+      withTs(mem.accepts, 0),
+      withTs(cloud.accepts, fbA),
+    ]);
     /* v4.1 — keep the durable local mirror exactly in sync with what we know */
     writeMirrorLocal();
     /* if the cloud had nothing but we have local data, adopt it upward so the
        next save/flush re-seeds Supabase instead of leaving it empty forever */
     if (!cloud.days && mem.days.length) upsert('days', mem.days);
     if (!cloud.fields && Object.keys(mem.fields).length) upsert('fields', mem.fields);
+    /* push any local tombstones the cloud does not know about yet (e.g. a
+       deletion performed while this device was offline) */
+    if (Object.keys(mem.deleted || {}).some(id => !(cloud.deleted && id in cloud.deleted))) pushDeletedTombstones();
   };
 
-  /* v4.13d DH — the most recent server rows we have seen (from any pull).
-     mergeKeyValues() unions writes against these so a save from this device
-     can never erase another device's newer values that we already know about. */
+  /* v4.13f DH — hoisted ABOVE every user (upsertMerged now pulls through it).
+     The most recent server rows we have seen (from any pull); mergeKeyValues()
+     unions writes against these so a save from this device can never erase
+     another device's newer values that we already know about. */
   let lastServerRows = [];
   const fetchState = async () => {
-    const { data, error } = await sb.from('contract_state').select('k,v');
+    if (!sb) return [];
+    /* updated_at is pulled too: LWW falls back to it for legacy unstamped rows */
+    const { data, error } = await sb.from('contract_state').select('k,v,updated_at');
     if (error) throw error;
     lastServerRows = Array.isArray(data) ? data : [];
     return data;
+  };
+
+  /* v4.13f DH — write QUEUE: one lane per cloud key, strictly serialised.
+     Without this, two upserts of the same key fired back-to-back (e.g. the
+     persistDays + saveDays double-push on every day creation) could interleave
+     their read-modify-write steps and land an older merged value after a newer
+     one — silently dropping the other side's edits across devices. */
+  const writeLane = {};
+  const queued = (k, job) => {
+    const prev = writeLane[k] || Promise.resolve();
+    const run = prev.catch(() => {}).then(job);
+    writeLane[k] = run.then(() => true, () => false);
+    return run;
   };
 
   const startLoad = () => {
@@ -499,10 +710,10 @@
       if (!sb) return false;
       adoptDomState();                                   // v4.1 — newest DOM (AI days included) first
       try {
-        upsert('fields',  mem.fields);
-        upsert('accepts', mem.accepts);
-        upsert('days',    mem.days);
-        upsert('wiped',   { flag: mem.wiped });
+        upsertMerged('fields',  mem.fields);             // v4.13e — merged pushes, never raw replace
+        upsertMerged('accepts', mem.accepts);
+        upsertMerged('days',    mem.days);
+        pushDeletedTombstones();                         // deletions travel too
         writeMirrorLocal();                              // v4.1 — durable local copy too
         return true;
       } catch (e) { console.warn('[cloud] flush failed', e); return false; }
@@ -528,35 +739,21 @@
     saveFields(fields) { return upsertMerged('fields',  Object.assign({}, mem.fields, fields)); },
     saveAccepts(a)     { return upsertMerged('accepts', Object.assign({}, mem.accepts, a)); },
     /* v4.2 DH — setMirrorDays(list): authoritative DOM snapshot from app.js's
-       persistDays(). Replaces the mirror (so deletions stick) AND updates this
-       device's durable local copy, then saveDays() pushes it to Supabase.
-       v4.2 FIX: this method now ALSO upserts the list to 'days' immediately.
-       Older browsers with a stale cached cloud.js threw
-       "window.CloudStore.setMirrorDays is not a function" inside persistDays(),
-       which killed the AI-apply path before saveDays() ever ran — so AI days
-       never reached the cloud. The immediate upsert here guarantees that even
-       if a caller's follow-up saveDays() call is missed or throws, the newest
-       day list still lands in Supabase. */
+       persistDays(). Updates this device's durable local copy, then pushes the
+       MERGED list to Supabase.
+       v4.13e DH — NO MORE ABSENCE-DELETION: a day missing from this snapshot is
+       NOT tombstoned any more (that rule silently erased the other phone's days
+       whenever a stale/partial snapshot was pushed). Deletions are explicit:
+       app.js calls CloudStore.saveDeleted() from ✖ Delete / 🧹 Wipe, which
+       writes a timestamped tombstone locally AND to the cloud 'deleted' key;
+       pruneDeleted() honours those on every inbound and outbound list. */
     setMirrorDays(list) {
       if (!Array.isArray(list)) return Promise.resolve(false);
-      /* v4.12 DH — REPLACE (not union): the incoming DOM snapshot is the single
-         source of truth, so a day the user just deleted on this device can no
-         longer survive in the mirror via an old merged copy. Anything that was
-         in the mirror but is missing from the new list is tombstoned permanently
-         and pruned from the local snapshots / durable mirror too. */
       const next = pruneDeleted(list.filter(d => d && d.id && d.html));
-      const nextIds = new Set(next.map(d => d.id));
-      const gone = [];
-      [...mem.days, ...(readLocalDays() || []), ...((readMirrorLocal() || {}).days || [])].forEach(d => {
-        if (d && /^day\d+$/.test(d.id) && !nextIds.has(d.id)) gone.push(d.id);
-      });
-      if (gone.length) rememberDeleted(gone);
-      mem.days = pruneDeleted(next);
+      mem.days = mergeDaysLWW([serverRowVal('days'), readLocalDays(),
+                                ((readMirrorLocal() || {}).days || []), next]);
       writeMirrorLocal();
       pruneLocalSnapshots();
-      /* v4.13d DH — merged push: our authoritative (tombstone-pruned) list wins
-         per day-id, but days only the OTHER device has saved are kept instead of
-         being wiped by a replace-style upsert. */
       return upsertMerged('days', mem.days);
     },
     /* v4.1 DH — saveDays MERGES with the mirror instead of replacing it, so an
@@ -564,14 +761,18 @@
        ran with a slightly older DOM snapshot.
        v4.12 DH — mergeDays now prunes every tombstoned (deleted) day first. */
     saveDays(list)     { return upsertMerged('days', pruneDeleted(mergeDays(list, mem.days))); },
+    /* v4.13e DH — EXPLICIT DELETION API used by app.js (✖ Delete day / 🧹 Wipe):
+       records the tombstones locally and pushes them to the shared 'deleted'
+       key so the removal sticks on EVERY device, permanently. */
+    saveDeleted(ids)   { rememberDeleted(ids); return pushDeletedTombstones(); },
     /* v4.0 DH — no-op kept for backwards compatibility with app.js v3.x calls.
        The sticky "wiped" flag is dead: nothing may auto-clear days anymore. */
     saveWiped()        { return Promise.resolve(true); },
 
     /* synchronous accessors used by the UI between saves */
-    fields()  { return mem.fields; },
-    accepts() { return mem.accepts; },
-    days()    { return mem.days; },
+    fields()  { return Object.assign({}, mem.fields); },
+    accepts() { return Object.assign({}, mem.accepts); },
+    days()    { return mem.days.slice(); },
     /* v4.13d DH — subscribe to "the other device saved something" events.
      app.js registers resyncFromCloud here so realtime pushes replay into the
      live DOM immediately, not only when the tab regains focus. */

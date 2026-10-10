@@ -60,6 +60,13 @@
                                               including edited static pages. */
   const dayNumber = id => { const m = /^day(\d+)$/.exec(id); return m ? +m[1] : null; };
 
+  /* v4.13f DH — localStorage HARDENING: privacy mode / opaque-origin / some
+     webviews THROW SecurityError from EVERY localStorage access (not just on
+     parse). safeGet/safeSet never throw → no save/load path can be killed by
+     an unavailable storage API; the cloud stays authoritative either way. */
+  const safeGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+  const safeSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } };
+
   /* ---------- v4.8 DH — DELETE TOMBSTONES ("deleted days never come back") ----------
      Root cause of deleted days resurrecting: js/cloud.js mergeDays() UNION-merges
      the cloud list with this device's local snapshots on EVERY pull, and saveDays/
@@ -73,7 +80,7 @@
   var DELETED_KEY = 'dhContract.deleted.v1';   // var → also readable from the service worker
   const readDeleted = () => {
     try {
-      const raw = JSON.parse(localStorage.getItem(DELETED_KEY));
+      const raw = JSON.parse(safeGet(DELETED_KEY));
       if (raw && Array.isArray(raw.ids)) return raw.ids.filter(id => dayNumber(id));
       if (Array.isArray(raw)) return raw.filter(id => dayNumber(id));   // tolerate plain-array form
     } catch { /* ignore */ }
@@ -84,7 +91,7 @@
     let changed = false;
     [].concat(ids || []).forEach(id => { if (dayNumber(id) && !cur.has(id)) { cur.add(id); changed = true; } });
     if (!changed) return cur;
-    try { localStorage.setItem(DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() })); }
+    try { safeSet(DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() })); }
     catch { /* storage full — session memory still guards this tab */ }
     return cur;
   };
@@ -99,7 +106,7 @@
     let changed = false;
     [].concat(ids || []).forEach(id => { if (cur.delete(id)) changed = true; });
     if (changed) {
-      try { localStorage.setItem(DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() })); }
+      try { safeSet(DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() })); }
       catch { /* storage full — session guard still applies this tab */ }
     }
     return cur;
@@ -130,12 +137,12 @@
   var CREATED_KEY = 'dhContract.created.v1';   // var → also readable from the service worker
   const readCreatedMap = () => {
     try {
-      const raw = JSON.parse(localStorage.getItem(CREATED_KEY));
+      const raw = JSON.parse(safeGet(CREATED_KEY));
       return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
     } catch { return {}; }
   };
   const writeCreatedMap = m => {
-    try { localStorage.setItem(CREATED_KEY, JSON.stringify(m)); } catch { /* storage full — cloud copy still authoritative */ }
+    try { safeSet(CREATED_KEY, JSON.stringify(m)); } catch { /* storage full — cloud copy still authoritative */ }
   };
   /* record "now" as the creation time of a freshly-made day (idempotent: first stamp wins) */
   const markDayCreated = id => {
@@ -478,8 +485,8 @@
      report success while the writes were still in flight (and unload writes were
      silently dropped). Now every mutation awaits this before claiming Saved ✓. */
   const syncNow = async () => {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(collectState())); } catch { /* full */ }
-    try { localStorage.setItem(DAYS_KEY, JSON.stringify({ list: collectDays() || [] })); } catch { /* full */ }
+    try { safeSet(STORE_KEY, JSON.stringify(collectState())); } catch { /* full */ }
+    try { safeSet(DAYS_KEY, JSON.stringify({ list: collectDays() || [] })); } catch { /* full */ }
     writeStore('sync');                             // fields (Day + Affidavit), no debounce
     const acc = collectAccepts();
     if (acc && window.CloudStore) {
@@ -532,8 +539,8 @@
     let res = { ok: true, pending: 0 };
     let localOk = true;
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(collectState()));
-      localStorage.setItem(DAYS_KEY, JSON.stringify({ list: collectDays() || [] }));
+      safeSet(STORE_KEY, JSON.stringify(collectState()));
+      safeSet(DAYS_KEY, JSON.stringify({ list: collectDays() || [] }));
     } catch { localOk = false; }
     try { res = await syncNow(); } catch { res = { ok: false, pending: 1 }; }
 
@@ -604,7 +611,7 @@
   /* load values: cloud mirror wins, local copy fills any gaps */
   const loadSaved = (data) => {
     let merged = {};
-    try { Object.assign(merged, JSON.parse(localStorage.getItem(STORE_KEY)) || {}); } catch { /* ignore */ }
+    try { Object.assign(merged, JSON.parse(safeGet(STORE_KEY)) || {}); } catch { /* ignore */ }
     if (window.CloudStore && typeof window.CloudStore.fields === 'function') {
       try { Object.assign(merged, window.CloudStore.fields() || {}); } catch { /* ignore */ }
     }
@@ -627,7 +634,7 @@
       try { const d = window.CloudStore.days(); if (Array.isArray(d)) list = d; } catch { /* ignore */ }
     }
     if (!list) {
-      try { const raw = JSON.parse(localStorage.getItem(DAYS_KEY)); if (raw && Array.isArray(raw.list)) list = raw.list; } catch { /* ignore */ }
+      try { const raw = JSON.parse(safeGet(DAYS_KEY)); if (raw && Array.isArray(raw.list)) list = raw.list; } catch { /* ignore */ }
     }
     /* v4.8 DH — tombstone guard: strip any day that was deleted via "✖ Delete
        day" / wipe from EVERY inbound list (cloud arg, cloud mirror, local
@@ -680,7 +687,7 @@
         } catch { /* ignore */ }
         if (!seed) {
           try {
-            const raw = JSON.parse(localStorage.getItem(DAYS_KEY));
+            const raw = JSON.parse(safeGet(DAYS_KEY));
             const loc = raw && Array.isArray(raw.list) ? raw.list.find(x => x && x.id === d.id) : null;
             const lu = Date.parse((loc && loc.updatedAt) || '');
             if (Number.isFinite(lu)) seed = lu;
@@ -1338,6 +1345,10 @@
        (reload / re-login / realtime pull / other device) refuses to re-attach
        this day id. New days created afterwards are untouched. */
     addDeleted(dayId);
+    /* v4.13e DH — push the EXPLICIT tombstone to the shared cloud 'deleted'
+       key so this deletion sticks permanently on EVERY device (absence from a
+       day list is never treated as a deletion any more). */
+    try { if (window.CloudStore && typeof window.CloudStore.saveDeleted === 'function') window.CloudStore.saveDeleted([dayId]); } catch { /* offline — local tombstone + next flush still deliver it */ }
     persistDays();                       // cloud day list no longer contains it
     save();
     refreshAiDayOptions();               // keep the AI target list in sync
@@ -1369,6 +1380,8 @@
        mirror / Supabase receive the pruned list and nothing ever re-attaches
        these days on reload, re-login or from the other device. */
     addDeleted(dayPages().map(p => p.id));
+    /* v4.13e DH — push the wiped ids as EXPLICIT cloud tombstones too */
+    try { if (window.CloudStore && typeof window.CloudStore.saveDeleted === 'function') window.CloudStore.saveDeleted(dayPages().map(p => p.id)); } catch { /* offline guard: local tombstones still apply, flush retries */ }
     dayPages().forEach(p => {
       const dayId = p.id;
       const accepts = readAccepts();
@@ -2170,10 +2183,17 @@
      "what you see on screen right now" always win per-key, so a Save on one
      phone can never push an older in-memory copy over the other phone's
      newest data, and detached-day values are unioned rather than dropped. */
+  /* v4.13e DH — collectDays() is the AUTHORITATIVE day snapshot: every page
+     carries updatedAt/createdAt stamps (persistDays does), so cloud.js can do
+     true per-day LAST-WRITER-WINS merges. If persistDays hasn't booted yet we
+     return null → caller keeps its own snapshot instead of mixing in an
+     UNSTAMPED list that would corrupt the timestamp comparison. */
   window.dhCollectFresh = key => {
     try {
       if (key === 'fields')  return collectState();
-      if (key === 'days')    return collectDays().map(d => ({ id: d.id, html: d.html, updatedAt: Date.now() }));
+      if (key === 'days')    return (typeof persistDays === 'function' && typeof window.dhPersistDays === 'function')
+        ? collectDays().map(d => ({ id: d.id, html: d.html, createdAt: createdAtFor(d.id) || null, updatedAt: Date.now() }))
+        : null;
       if (key === 'accepts') return collectAccepts();
     } catch { /* DOM mid-mutation — caller keeps its own snapshot */ }
     return null;
@@ -2888,9 +2908,9 @@ ${bodyHtml}
      still works exactly as before.
      ============================================================ */
   const pwState = (() => {
-    try { return JSON.parse(localStorage.getItem(PW_KEY)) || {}; } catch { return {}; }
+    try { return JSON.parse(safeGet(PW_KEY)) || {}; } catch { return {}; }
   })();
-  const savePw = () => { try { localStorage.setItem(PW_KEY, JSON.stringify(pwState)); } catch { /* ignore */ } };
+  const savePw = () => { try { safeSet(PW_KEY, JSON.stringify(pwState)); } catch { /* ignore */ } };
 
   /* ---------- "Add to Home screen" button (v4.7 DH — created in JS so the
      install flow works even though index.html ships without an install UI) ---------- */
@@ -3017,15 +3037,15 @@ ${bodyHtml}
       try { reg = await navigator.serviceWorker.register('sw.js'); }
       catch (err) { console.warn('Service worker not registered:', err); return; }
       const post = msg => { try { (reg.active || reg.installing || reg.waiting)?.postMessage(msg); } catch { /* ignore */ } };
-      post({ type: 'DH_STATE', key: STORE_KEY, value: localStorage.getItem(STORE_KEY) || null });
-      post({ type: 'DH_STATE', key: DAYS_KEY,  value: localStorage.getItem(DAYS_KEY)  || null });
-      post({ type: 'DH_STATE', key: 'signAccepted', value: localStorage.getItem('signAccepted') || null });
+      post({ type: 'DH_STATE', key: STORE_KEY, value: safeGet(STORE_KEY) || null });
+      post({ type: 'DH_STATE', key: DAYS_KEY,  value: safeGet(DAYS_KEY)  || null });
+      post({ type: 'DH_STATE', key: 'signAccepted', value: safeGet('signAccepted') || null });
       document.addEventListener('visibilitychange', () => {
-        if (pageVisible()) post({ type: 'DH_STATE', key: STORE_KEY, value: localStorage.getItem(STORE_KEY) || null });
+        if (pageVisible()) post({ type: 'DH_STATE', key: STORE_KEY, value: safeGet(STORE_KEY) || null });
       });
       ['syncData', 'save-contract'].forEach(id => {
         const b = $('#' + id);
-        if (b) b.addEventListener('click', () => post({ type: 'DH_STATE', key: DAYS_KEY, value: localStorage.getItem(DAYS_KEY) || null }));
+        if (b) b.addEventListener('click', () => post({ type: 'DH_STATE', key: DAYS_KEY, value: safeGet(DAYS_KEY) || null }));
       });
       if (reg.waiting) notifyUpdate();
       reg.addEventListener('updatefound', () => {
@@ -3058,9 +3078,9 @@ ${bodyHtml}
     navigator.serviceWorker.getRegistration().then(reg => {
       if (!reg) return;
       const post = msg => { try { (reg.active || reg.installing || reg.waiting)?.postMessage(msg); } catch { /* ignore */ } };
-      post({ type: 'DH_STATE', key: STORE_KEY, value: localStorage.getItem(STORE_KEY) || null });
-      post({ type: 'DH_STATE', key: DAYS_KEY,  value: localStorage.getItem(DAYS_KEY)  || null });
-      post({ type: 'DH_STATE', key: 'signAccepted', value: localStorage.getItem('signAccepted') || null });
+      post({ type: 'DH_STATE', key: STORE_KEY, value: safeGet(STORE_KEY) || null });
+      post({ type: 'DH_STATE', key: DAYS_KEY,  value: safeGet(DAYS_KEY)  || null });
+      post({ type: 'DH_STATE', key: 'signAccepted', value: safeGet('signAccepted') || null });
     }).catch(() => { /* ignore */ });
   }, 90000);
 })();

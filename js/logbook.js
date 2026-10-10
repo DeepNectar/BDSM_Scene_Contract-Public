@@ -55,6 +55,11 @@
 (() => {
   'use strict';
 
+  /* v4.13f DH — never let a throwing localStorage (private mode / opaque
+     origin) break the log-book bridge; the server copy is authoritative. */
+  const safeGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+  const safeSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } };
+
   const LB_URL = 'https://bdsmlogbook.vercel.app/';
   const LB_REST = 'https://sjaxgxsvtldcgvunzeye.supabase.co/rest/v1';
   /* anon key already public in the log book's own js/main.js — same access
@@ -68,7 +73,7 @@
   let pulling = null;                     // shared in-flight promise
   let latest = {};                        // sheet_name -> {html, ts}
 
-  try { latest = JSON.parse(localStorage.getItem(LB_LS) || '{}') || {}; } catch { latest = {}; }
+  try { latest = JSON.parse(safeGet(LB_LS) || '{}') || {}; } catch { latest = {}; }
 
   const escH = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -207,7 +212,7 @@
   };
 
   const persistMirror = () => {
-    try { localStorage.setItem(LB_LS, JSON.stringify(latest)); } catch { /* quota — fine */ }
+    try { safeSet(LB_LS, JSON.stringify(latest)); } catch { /* quota — fine */ }
   };
 
   const pullLogBook = (force) => {
