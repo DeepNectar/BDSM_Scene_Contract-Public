@@ -1,16 +1,25 @@
 -- ============================================================
--- Deep & Honey · Eternal Contract — COMPLETE go-live SQL
+-- Deep & Honey · Eternal Contract — COMPLETE go-live SQL (v4.13c DH)
 -- Project: qbnxcfwwsuqfmearyris  (https://qbnxcfwwsuqfmearyris.supabase.co)
 -- Run this ONCE in Supabase Dashboard → SQL Editor → New query → Run.
 -- Safe to re-run any time (idempotent). No data is deleted on re-run.
 --
--- What gets saved here by the app (js/cloud.js v3.9):
+-- ⚠️ IF YOU ALREADY RAN AN OLDER VERSION OF THIS FILE: you MUST re-run
+--    this updated version once. Section 7 adds two safety columns
+--    (created_at, last_writer) that the current app (js/cloud.js v4.13c)
+--    relies on for conflict-safe cross-device sync. Re-running will NOT
+--    delete or alter any existing saved data.
+--
+-- What gets saved here by the app (js/cloud.js v4.13c):
 --   'fields'  → ALL text entries of the Pre-Scene Execution Affidavit
 --               (names, dates, places, vows, every input/textarea)
 --   'accepts' → signature / acceptance ("I accept") data of the affidavit
 --   'days'    → full HTML of EVERY day section created during a session
 --               (blank ➕ days and ✨ AI-written days alike)
---   'wiped'   → flag remembering that days were cleared
+--   'deleted' → tombstones of permanently deleted days (so a deleted day
+--               never reappears on any device)
+--   'wiped'   → legacy flag — kept in the table for compatibility but the
+--               app now IGNORES it (it used to cause "auto wipe" bugs)
 -- ============================================================
 
 -- ------------------------------------------------------------
@@ -91,12 +100,32 @@ grant select, insert, update, delete on public.contract_state to anon, authentic
 grant all          on public.contract_state to service_role;
 
 -- ------------------------------------------------------------
--- 6) SANITY CHECK — should run without errors (0 rows is fine
+-- 6) v4.13c DH — CROSS-DEVICE SYNC SAFETY COLUMNS (idempotent)
+--    • created_at  : when a key was first written (audit / debugging)
+--    • last_writer : which device performed the most recent write
+--                    (stored as an opaque device tag sent by cloud.js)
+--    These columns have DEFAULTs, so they are fully compatible with
+--    the app's current upsert shape ({ k, v }) — no app change needed,
+--    and re-running this file never touches existing rows' data.
+-- ------------------------------------------------------------
+alter table public.contract_state
+  add column if not exists created_at  timestamptz not null default now(),
+  add column if not exists last_writer text        not null default 'unknown';
+
+comment on column public.contract_state.created_at is
+  'First time this state key was written by any device.';
+comment on column public.contract_state.last_writer is
+  'Opaque tag of the device that wrote this key last (cross-device sync audit).';
+
+-- ------------------------------------------------------------
+-- 7) SANITY CHECK — should run without errors (0 rows is fine
 --    until you first save in the app)
 -- ------------------------------------------------------------
 select k,
        length(v::text)  as bytes,
-       updated_at
+       updated_at,
+       created_at,
+       last_writer
 from   public.contract_state
 order  by updated_at desc;
 
@@ -107,4 +136,10 @@ order  by updated_at desc;
 --    • Press SAVE → status shows "☁️ Connected · synced Xs ago"
 --    • Open the same URL on the second device → everything
 --      appears within ~1 second via realtime.
+--
+--    Synced automatically on every SAVE:
+--      – affidavit fields (all inputs/textareas)
+--      – signatures / acceptances
+--      – every created day (blank & AI), including checklists
+--      – permanent deletions (tombstones) so deleted days stay gone
 -- ============================================================
