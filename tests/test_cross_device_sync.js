@@ -33,8 +33,11 @@ function makeServerClient() {
       return {
         select() { return Promise.resolve({ data: JSON.parse(JSON.stringify(serverRows)), error: null }); },
         upsert(row) {
+          /* mirrors the real table now: rows carry k, v + audit columns
+             (updated_at default, created_at default, last_writer default) */
           const i = serverRows.findIndex(r => r.k === row.k);
-          if (i >= 0) serverRows[i].v = row.v; else serverRows.push({ k: row.k, v: row.v });
+          if (i >= 0) Object.assign(serverRows[i], row);
+          else serverRows.push({ created_at: new Date().toISOString(), last_writer: 'unknown', ...row });
           realtimeListeners.forEach(fn => { try { fn(); } catch {} });
           return Promise.resolve({ error: null });
         },
