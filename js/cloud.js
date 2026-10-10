@@ -123,10 +123,19 @@
     } catch { return null; }
   };
 
+  /* v4.13c DH — app.js writes its offline day snapshot under 'dhContract.days.v1'
+     as {list:[…]}; the durable mirror uses the SAME key with a flat {days:[…]}
+     shape. The old reader only understood {list} — so on devices whose cached
+     app.js still wrote the flat shape, readLocalDays() returned null and the
+     locally saved days silently vanished from every merge/restore path.
+     Now BOTH shapes are understood → a saved day can never be missed. */
   const readLocalDays = () => {
     try {
       const raw = JSON.parse(localStorage.getItem(LS_DAYS_KEY));
-      return (raw && Array.isArray(raw.list)) ? raw.list : null;
+      if (raw && Array.isArray(raw.list)) return raw.list;
+      if (Array.isArray(raw)) return raw;                       // legacy: plain array
+      if (raw && Array.isArray(raw.days)) return raw.days;      // flat mirror shape
+      return null;
     } catch { return null; }
   };
   const readLocalFields = () => {
@@ -239,9 +248,78 @@
     return p;
   };
 
+  /* v4.13c DH — every write now also stamps `last_writer` with this device's
+     tag (persisted locally, random per install). The column has a DEFAULT in
+     SQL and is purely additive, so old rows/queries keep working; it gives a
+     per-key audit trail of WHICH device last synced the data. */
+  const LS_WRITER_KEY = 'dhContract.deviceTag.v1';
+  const deviceTag = (() => {
+    try {
+      let t = localStorage.getItem(LS_WRITER_KEY);
+      if (!t) {
+        t = 'dev-' + Math.random().toString(36).slice(2, 8) + '-' + Date.now().toString(36);
+        localStorage.setItem(LS_WRITER_KEY, t);
+      }
+      return t;
+    } catch { return 'unknown'; }
+  })();
+
   const upsert = (k, v) => {
     if (!sb) return Promise.resolve(false);
-    return runWrite('upsert ' + k, () => sb.from('contract_state').upsert({ k, v }));
+    return runWrite('upsert ' + k, () => sb.from('contract_state').upsert({ k, v, last_writer: deviceTag }));
+  };
+
+  /* v4.13d DH — THE "SAVE WIPES THE OTHER DEVICE'S EDITS" BUG (cross-device
+     sync guarantee): every writer used to REPLACE its whole cloud key with
+     this device's in-memory copy. If this tab had booted from a stale mirror
+     (offline at boot, missed realtime push, old cache), pressing 💾 Save
+     silently OVERWROTE newer values the other phone had just written — and
+     worse, saveFields() replaced mem.fields with collectState(), which only
+     sees fields CURRENTLY IN THIS DOM, so values belonging to days not
+     attached here were dropped from the mirror entirely and then pushed to
+     the cloud missing. Now every write is a LAST-WRITER-WINS MERGE against
+     the freshest data we hold (server row ∪ local mirror ∪ this snapshot),
+     with this device's newest snapshot winning per-key. Nothing another
+     device saved can ever be erased by a save on this one; deletions still
+     stick because they are tombstone-driven (see pruneDeleted), not
+     absence-driven. */
+  const freshLocal = (key, snap) => {
+    try {
+      if (typeof window.dhCollectFresh === 'function') {
+        const f = window.dhCollectFresh(key);
+        if (f && typeof f === 'object') return Object.assign({}, snap || {}, f);
+      }
+    } catch { /* app.js not booted yet — fall back to caller snapshot */ }
+    return snap;
+  };
+  const serverRowVal = (k) => {
+    const i = lastServerRows.findIndex(r => r && r.k === k);
+    return i >= 0 ? lastServerRows[i].v : null;
+  };
+  const mergeKeyValues = (k, snap) => {
+    const localMirror = (readMirrorLocal() || {})[k];
+    const server = serverRowVal(k);
+    if (k === 'days') {
+      /* id-level last-writer-wins: server copy → older local copies → ours */
+      const map = new Map();
+      [server, readLocalDays(), (localMirror || []).days || localMirror, snap]
+        .forEach(list => {
+          if (!Array.isArray(list)) return;
+          pruneDeleted(list).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
+        });
+      return Array.from(map.values()).sort((a, b) =>
+        ((parseInt((/^day(\d+)/.exec(a.id) || [])[1], 10) || 0) -
+         (parseInt((/^day(\d+)/.exec(b.id) || [])[1], 10) || 0)));
+    }
+    /* plain object keys ('fields' / 'accepts'): union, ours wins per key */
+    return Object.assign({}, server || {}, localMirror || {}, snap || {});
+  };
+  const upsertMerged = (k, snap) => {
+    if (!sb) return Promise.resolve(false);
+    const v = mergeKeyValues(k, freshLocal(k, snap));
+    mem[k] = v;                       // mirror now holds the merged truth too
+    writeMirrorLocal();
+    return upsert(k, v);
   };
 
   /* ---------- v3.8 DH — ALL day pages are saved to the cloud ----------
@@ -313,9 +391,14 @@
     if (!cloud.fields && Object.keys(mem.fields).length) upsert('fields', mem.fields);
   };
 
+  /* v4.13d DH — the most recent server rows we have seen (from any pull).
+     mergeKeyValues() unions writes against these so a save from this device
+     can never erase another device's newer values that we already know about. */
+  let lastServerRows = [];
   const fetchState = async () => {
     const { data, error } = await sb.from('contract_state').select('k,v');
     if (error) throw error;
+    lastServerRows = Array.isArray(data) ? data : [];
     return data;
   };
 
@@ -348,6 +431,14 @@
      callback (wired in app.js → restoreDays/loadSaved/applySignatures). */
   let channel = null;
   let rtTimer = 0;
+  /* v4.13d DH — realtime listeners registered by app.js. After every pull we
+     fire them so the OTHER device's saves are replayed into the live DOM
+     within ~1 second (previously only tab-focus did that). */
+  const changeListeners = [];
+  let lastPushSig = '';            // signature of OUR OWN last merged push
+  const pushSignature = () => {
+    try { return JSON.stringify([mem.fields, mem.accepts, mem.days]); } catch { return ''; }
+  };
   const startRealtime = () => {
     if (!sb || channel || !sb.realtime || typeof sb.channel !== 'function') return;
     try {
@@ -357,7 +448,9 @@
             () => {
               clearTimeout(rtTimer);
               rtTimer = setTimeout(() => {
-                cloud.refresh().catch(() => {});
+                cloud.refresh().then(st => {
+                  if (st) changeListeners.forEach(fn => { try { fn(st); } catch { /* ignore */ } });
+                }).catch(() => {});
               }, 400);
             })
         .subscribe();
@@ -432,8 +525,8 @@
       return { ok: ok && pendingWrites === 0, pending: pendingWrites };
     },
 
-    saveFields(fields) { mem.fields = fields;  writeMirrorLocal(); return upsert('fields',  fields); },
-    saveAccepts(a)     { mem.accepts = a;      writeMirrorLocal(); return upsert('accepts', a); },
+    saveFields(fields) { return upsertMerged('fields',  Object.assign({}, mem.fields, fields)); },
+    saveAccepts(a)     { return upsertMerged('accepts', Object.assign({}, mem.accepts, a)); },
     /* v4.2 DH — setMirrorDays(list): authoritative DOM snapshot from app.js's
        persistDays(). Replaces the mirror (so deletions stick) AND updates this
        device's durable local copy, then saveDays() pushes it to Supabase.
@@ -461,13 +554,16 @@
       mem.days = pruneDeleted(next);
       writeMirrorLocal();
       pruneLocalSnapshots();
-      return upsert('days', mem.days);
+      /* v4.13d DH — merged push: our authoritative (tombstone-pruned) list wins
+         per day-id, but days only the OTHER device has saved are kept instead of
+         being wiped by a replace-style upsert. */
+      return upsertMerged('days', mem.days);
     },
     /* v4.1 DH — saveDays MERGES with the mirror instead of replacing it, so an
        AI day captured by one code path is never dropped by another path that
        ran with a slightly older DOM snapshot.
        v4.12 DH — mergeDays now prunes every tombstoned (deleted) day first. */
-    saveDays(list)     { mem.days = pruneDeleted(mergeDays(list, mem.days)); writeMirrorLocal(); pruneLocalSnapshots(); return upsert('days', mem.days); },
+    saveDays(list)     { return upsertMerged('days', pruneDeleted(mergeDays(list, mem.days))); },
     /* v4.0 DH — no-op kept for backwards compatibility with app.js v3.x calls.
        The sticky "wiped" flag is dead: nothing may auto-clear days anymore. */
     saveWiped()        { return Promise.resolve(true); },
@@ -476,6 +572,10 @@
     fields()  { return mem.fields; },
     accepts() { return mem.accepts; },
     days()    { return mem.days; },
+    /* v4.13d DH — subscribe to "the other device saved something" events.
+     app.js registers resyncFromCloud here so realtime pushes replay into the
+     live DOM immediately, not only when the tab regains focus. */
+    onChange(fn) { if (typeof fn === 'function') changeListeners.push(fn); },
     /* v4.0 DH — always true: the sticky auto-wipe is DEAD. Days are never
        blocked from restoring on reload/login; only the explicit red
        "✖ Delete day" / manual wipe buttons can remove a day now. */

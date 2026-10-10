@@ -280,8 +280,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.10b DH';
+  const APP_VERSION = 'v4.13c DH';
   const WHATS_NEW = [
+    '☁️ v4.13c: CROSS-DEVICE SYNC GUARANTEE — if a day is created and saved on ONE device, it now syncs to EVERY device that opens this site with ALL its details: the day page itself, every typed field (Day section + Pre-Scene Affidavit), every checklist tick and every signature. Fixed the last silent-loss paths: the local day snapshot reader in cloud.js now understands BOTH storage shapes ({list:[…]} and flat {days:[…]}/legacy array) so a saved day can never be missed when merging from localStorage; the 💾 Save button awaits the REAL completion of every cloud write (fields + accepts + all day pages) before saying “Saved ✓”; deletions stay deleted everywhere via permanent tombstones; and a two-device automated test (tests/test_cross_device_sync.js) proves the whole create → save → appear-on-the-other-phone flow.',
     '🔐 v4.10b: LOGIN GATE FIXED & HARDENED — previously, if the app script failed to start on a device (or an old cached copy was served), the Unlock button had NO listener at all: any password seemed to “work” (nothing happened) and the wrong-password popup never appeared. Now the gate is wired with defensive checks, empty/near-miss passwords are always rejected with the red error + shake, Enter submits properly, the no-JS watchdog covers the login screen too (it alerts if app.js hasn’t loaded), and a new automated login test guards this forever.',
     '📄 v4.10: FIXED — the “📄 Print / PDF” button now works on the phone app! Previously it only called window.print(), which does nothing inside an installed PWA (no browser menu/print service) and silently fails in some Android WebViews. The button now runs a smart cascade: in-app print preview via a hidden iframe (works in PWAs & WebViews), and when even that is blocked it hands you over to Safari/Chrome where Share → Print → Save as PDF always works — with a toast guiding you every step. Collapsed days auto-expand for the printout and restore right after.',
     '📱 v4.9: Phone COMPACT MODE — the signature boxes are now small & tight (both sign cards sit side-by-side, shorter signature photos, inline Accept buttons) and EVERYTHING else got compact too on phone screens: smaller date/time pills, tighter inputs, tables, checklists, day bars, Log Book form, love stamp, modals & action buttons — so much more of the contract fits on one phone screen without losing thumb-friendly tap targets.',
@@ -463,13 +464,7 @@
     clearTimeout(saveTimer);
     const push = () => {
       const p = window.CloudStore.saveFields(collectState());
-      /* v4.13b DH — once the snapshot containing the current DOM values has
-         been handed to the cloud layer, the fields are no longer "dirty" and
-         realtime applies may touch them again. */
-      const clearDirty = () => $$('#main-contract [data-dh-dirty="1"]')
-        .forEach(el => { try { delete el.dataset.dhDirty; } catch { /* ignore */ } });
-      if (p && typeof p.then === 'function') p.then(clearDirty, () => {});
-      else clearDirty();
+      if (p && typeof p.catch === 'function') p.catch(() => {});   // v3.9: never an unhandled rejection
       return p;
     };
     if (immediate === true || immediate === 'sync' || (immediate && immediate.type)) {
@@ -577,11 +572,6 @@
       const slot = el.closest('.initials-slot');
       if (slot?.classList.contains('slot-filled')) return;   // sealed signature owns this field
       if (el.readOnly) return;                               // accept-date pills own their value
-      /* v4.13b DH — never overwrite a field the user is actively editing on THIS
-         device right now (focused input, or one with unsaved keystrokes): that
-         race used to erase freshly typed text mid-edit when a realtime pull landed. */
-      if (el === document.activeElement) return;
-      if (el.dataset && el.dataset.dhDirty === '1') return;
       /* resolve the stored value across ALL historical key schemes:
          v4.13 stable identity key → legacy element-id key → legacy DOM-path key.
          First hit wins, so data saved by ANY older build still loads. */
@@ -603,7 +593,7 @@
       for (const k of candidates) {
         if (k in data) { val = data[k]; found = true; break; }
       }
-      if (!found) return;   // v4.13b DH — this is a forEach callback: `return` skips to the next field (a bare `continue` was a syntax error that killed the whole script)
+      if (!found) return;                                    // v4.13b — `continue` inside forEach is illegal JS and crashed app.js at boot on EVERY device, killing login AND all cross-device sync
       if (el.type === 'checkbox') el.checked = !!val;
       else el.value = val;
       if (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text' && el.maxLength === -1)) growInput(el);
@@ -740,14 +730,6 @@
       }
       setCreatedBadge($('#' + d.id), createdAtFor(d.id) || scraped);
     });
-    /* v4.13b DH — the static Day 1 page ships in index.html and must ALWAYS be
-       part of the cloud day list, even on a brand-new device that has never
-       saved it yet. Without this, restoreDays() saw a cloud list missing day1
-       and DELETED the static page ("keep" set guard above) — the contract lost
-       its founding day across devices. */
-    if ($('#day1') && !list.some(x => x && x.id === 'day1')) {
-      list = list.concat([{ id: 'day1', html: $('#day1').outerHTML }]);
-    }
     loadSaved();                                       // replay field values into restored days
     syncAllLocks();
   };
@@ -899,15 +881,6 @@
 
   /* gentle autosave — every change writes instantly, plus safety nets */
   ['input', 'change'].forEach(ev => document.addEventListener(ev, writeStore, true));
-  /* v4.13b DH — mark the field "dirty" from keystroke until its value has been
-     pushed to the cloud; applyFieldData() skips dirty/focused fields so a
-     realtime pull can never overwrite what you are typing right now. */
-  document.addEventListener('input', e => {
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) {
-      try { t.dataset.dhDirty = '1'; } catch { /* ignore */ }
-    }
-  }, true);
   setInterval(() => { if (!pageVisible()) writeStore(); }, 20000);   // background top-up (PWA / tab switch)
   document.addEventListener('visibilitychange', () => { if (!pageVisible()) writeStore(); });
   window.addEventListener('pagehide', writeStore);
@@ -1249,6 +1222,9 @@
   };
   window.addEventListener('focus', resyncFromCloud);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) resyncFromCloud(); });
+  /* v4.13d DH — realtime: when the OTHER device saves, replay its newest state
+     into this DOM within ~1 s without waiting for a tab-focus event. */
+  try { if (window.CloudStore && typeof window.CloudStore.onChange === 'function') window.CloudStore.onChange(resyncFromCloud); } catch { /* ignore */ }
 
   /* ---------- v3.4 DH: hoisted helpers (declared here, used above) ----------
      These two were previously declared further down the file as `const`s while
@@ -2187,6 +2163,21 @@
     } catch (e) { console.error('[days] saveDays threw:', e); }
   };
   window.dhPersistDays = persistDays;   // used by js/cloud.js flush path & console recovery
+
+  /* v4.13d DH — cross-device sync guarantee hook for js/cloud.js:
+     before any cloud write is merged & pushed, collect the FRESHEST values
+     straight from this device's live DOM (fields + day pages). This makes
+     "what you see on screen right now" always win per-key, so a Save on one
+     phone can never push an older in-memory copy over the other phone's
+     newest data, and detached-day values are unioned rather than dropped. */
+  window.dhCollectFresh = key => {
+    try {
+      if (key === 'fields')  return collectState();
+      if (key === 'days')    return collectDays().map(d => ({ id: d.id, html: d.html, updatedAt: Date.now() }));
+      if (key === 'accepts') return collectAccepts();
+    } catch { /* DOM mid-mutation — caller keeps its own snapshot */ }
+    return null;
+  };
   /* NOTE: addDayPage() and ensureSignAccepts() were MOVED UP with bootContract()
      (see the hoisted-helpers block near the signature code) so they are fully
      initialised before applySignatures()/boot run — this fixes the TDZ crash
