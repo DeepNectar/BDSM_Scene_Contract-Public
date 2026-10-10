@@ -123,10 +123,19 @@
     } catch { return null; }
   };
 
+  /* v4.13c DH — app.js writes its offline day snapshot under 'dhContract.days.v1'
+     as {list:[…]}; the durable mirror uses the SAME key with a flat {days:[…]}
+     shape. The old reader only understood {list} — so on devices whose cached
+     app.js still wrote the flat shape, readLocalDays() returned null and the
+     locally saved days silently vanished from every merge/restore path.
+     Now BOTH shapes are understood → a saved day can never be missed. */
   const readLocalDays = () => {
     try {
       const raw = JSON.parse(localStorage.getItem(LS_DAYS_KEY));
-      return (raw && Array.isArray(raw.list)) ? raw.list : null;
+      if (raw && Array.isArray(raw.list)) return raw.list;
+      if (Array.isArray(raw)) return raw;                       // legacy: plain array
+      if (raw && Array.isArray(raw.days)) return raw.days;      // flat mirror shape
+      return null;
     } catch { return null; }
   };
   const readLocalFields = () => {
@@ -239,9 +248,25 @@
     return p;
   };
 
+  /* v4.13c DH — every write now also stamps `last_writer` with this device's
+     tag (persisted locally, random per install). The column has a DEFAULT in
+     SQL and is purely additive, so old rows/queries keep working; it gives a
+     per-key audit trail of WHICH device last synced the data. */
+  const LS_WRITER_KEY = 'dhContract.deviceTag.v1';
+  const deviceTag = (() => {
+    try {
+      let t = localStorage.getItem(LS_WRITER_KEY);
+      if (!t) {
+        t = 'dev-' + Math.random().toString(36).slice(2, 8) + '-' + Date.now().toString(36);
+        localStorage.setItem(LS_WRITER_KEY, t);
+      }
+      return t;
+    } catch { return 'unknown'; }
+  })();
+
   const upsert = (k, v) => {
     if (!sb) return Promise.resolve(false);
-    return runWrite('upsert ' + k, () => sb.from('contract_state').upsert({ k, v }));
+    return runWrite('upsert ' + k, () => sb.from('contract_state').upsert({ k, v, last_writer: deviceTag }));
   };
 
   /* ---------- v3.8 DH — ALL day pages are saved to the cloud ----------

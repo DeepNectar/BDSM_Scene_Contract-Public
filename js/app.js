@@ -280,8 +280,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.10b DH';
+  const APP_VERSION = 'v4.13c DH';
   const WHATS_NEW = [
+    '☁️ v4.13c: CROSS-DEVICE SYNC GUARANTEE — if a day is created and saved on ONE device, it now syncs to EVERY device that opens this site with ALL its details: the day page itself, every typed field (Day section + Pre-Scene Affidavit), every checklist tick and every signature. Fixed the last silent-loss paths: the local day snapshot reader in cloud.js now understands BOTH storage shapes ({list:[…]} and flat {days:[…]}/legacy array) so a saved day can never be missed when merging from localStorage; the 💾 Save button awaits the REAL completion of every cloud write (fields + accepts + all day pages) before saying “Saved ✓”; deletions stay deleted everywhere via permanent tombstones; and a two-device automated test (tests/test_cross_device_sync.js) proves the whole create → save → appear-on-the-other-phone flow.',
     '🔐 v4.10b: LOGIN GATE FIXED & HARDENED — previously, if the app script failed to start on a device (or an old cached copy was served), the Unlock button had NO listener at all: any password seemed to “work” (nothing happened) and the wrong-password popup never appeared. Now the gate is wired with defensive checks, empty/near-miss passwords are always rejected with the red error + shake, Enter submits properly, the no-JS watchdog covers the login screen too (it alerts if app.js hasn’t loaded), and a new automated login test guards this forever.',
     '📄 v4.10: FIXED — the “📄 Print / PDF” button now works on the phone app! Previously it only called window.print(), which does nothing inside an installed PWA (no browser menu/print service) and silently fails in some Android WebViews. The button now runs a smart cascade: in-app print preview via a hidden iframe (works in PWAs & WebViews), and when even that is blocked it hands you over to Safari/Chrome where Share → Print → Save as PDF always works — with a toast guiding you every step. Collapsed days auto-expand for the printout and restore right after.',
     '📱 v4.9: Phone COMPACT MODE — the signature boxes are now small & tight (both sign cards sit side-by-side, shorter signature photos, inline Accept buttons) and EVERYTHING else got compact too on phone screens: smaller date/time pills, tighter inputs, tables, checklists, day bars, Log Book form, love stamp, modals & action buttons — so much more of the contract fits on one phone screen without losing thumb-friendly tap targets.',
@@ -603,6 +604,7 @@
       for (const k of candidates) {
         if (k in data) { val = data[k]; found = true; break; }
       }
+      if (!found) return;                                    // v4.13b — `continue` inside forEach is illegal JS and crashed app.js at boot on EVERY device, killing login AND all cross-device sync
       if (!found) return;   // v4.13b DH — this is a forEach callback: `return` skips to the next field (a bare `continue` was a syntax error that killed the whole script)
       if (el.type === 'checkbox') el.checked = !!val;
       else el.value = val;
