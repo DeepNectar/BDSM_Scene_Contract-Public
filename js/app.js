@@ -109,7 +109,12 @@
     const del = new Set(readDeleted());
     return (Array.isArray(list) ? list : []).filter(d => d && d.id && !del.has(d.id));
   };
-  window.dhReadDeleted = readDeleted;   // used by js/cloud.js applyRows()/saveDays()
+  /* v4.12 DH — expose the write-side tombstone helpers too, so js/cloud.js can
+     permanently record deletions it observes coming down from the cloud (a day
+     deleted on the OTHER device must never resurrect here). */
+  window.dhReadDeleted = readDeleted;
+  window.dhAddDeleted  = addDeleted;
+  window.dhLiftDeleted = liftDeleted;
 
   /* ---------- v4.11 DH — CREATED-STAMP REGISTRY ("what was created when") ----------
      Every day created on ANY device gets a permanent creation stamp that is pushed
@@ -396,19 +401,46 @@
 
   /* ---------- value accessors (stable per-page keys → no collisions) ---------- */
 
+  /* v4.13 DH — THE REAL SYNC BUG ("typing on one phone never appears on the other"):
+     a field's cloud key used to be either its element id (`day2#d2-a1`) or a
+     STRUCTURAL DOM PATH (`day2>43.2.1.3.0.0` — "the 43rd child, then its 2nd…").
+     Structural paths are only stable while the two devices hold the EXACT same
+     markup. The moment one device had an older cached index.html/app.js, or a day
+     was restored in a slightly different shape (a chip injected, a table wrapped
+     in .table-scroll by js/device.js, a Log Book block inserted by js/logbook.js),
+     every path shifted by one and the SAME sentence got saved under DIFFERENT keys
+     on the two phones → each device wrote past the other and nothing ever looked
+     "synced", even though Supabase was healthy the whole time.
+
+     Now every editable field carries a permanent identity stamp `data-dhk` that is
+     minted ONCE when the field is created and travels with the field inside the
+     day HTML pushed to the cloud. Both devices therefore key off the identical
+     token regardless of DOM shape, cache state or app version. Old path/id keys
+     keep working as read-only fallbacks so existing data still loads. */
+  var DHK_ATTR = 'data-dhk';
+  var dhkSeq = 0;
+  const genDhk = () => 'f' + (++dhkSeq).toString(36) + Date.now().toString(36);
+  const stampFields = root => {
+    $$('input, textarea, select', root || document).forEach(el => {
+      if (!el.hasAttribute(DHK_ATTR)) el.setAttribute(DHK_ATTR, genDhk());
+    });
+  };
   /* unique key for any field: page id + element id, or a structural DOM path */
   const keyFor = el => {
     const page = el.closest('.page');
     const pid  = page ? page.id : 'head';
-    if (el.id) return `${pid}#${el.id}`;
+    const dhk  = el.getAttribute && el.getAttribute(DHK_ATTR);
+    if (dhk) return `${pid}~${dhk}`;                 // v4.13 — stable identity key (wins)
+    if (el.id) return `${pid}#${el.id}`;             // legacy id key (fallback)
     const path = [];
     for (let n = el; n && n !== page && n.id !== 'main-contract'; n = n.parentElement) {
       path.push(Array.from(n.parentElement.children).indexOf(n));
     }
-    return `${pid}>${path.reverse().join('.')}`;
+    return `${pid}>${path.reverse().join('.')}`;     // legacy structural key (fallback)
   };
 
   const collectState = () => {
+    ensureDhkStamps();                                  /* v4.13 — stamp before keying */
     const data = {};
     $$('#main-contract input:not([type="checkbox"]):not([type="password"]), #main-contract textarea, #main-contract select')
       .forEach(el => { data[keyFor(el)] = el.value; });
@@ -420,6 +452,13 @@
   /* ---------- cloud save (Supabase is the source of truth; localStorage is
      only a per-device safety net for offline sessions) ---------- */
   let saveTimer;
+  /* v4.13 DH — THE "IT STILL DOESN'T SYNC" BUG: the autosave debounce timer was
+     NEVER started on unload. pagehide / beforeunload / background top-up all ran
+     writeStore(), which merely CLEARED the pending timer and re-armed a 1.2 s
+     setTimeout that a frozen/closed tab never gets to run — so the last thing you
+     typed (or an ✨ AI day made seconds before you switched apps) stayed in the DOM
+     and NEVER reached Supabase. The other phone then pulled the older state and it
+     looked like "sync is not happening at all". Unload now flushes synchronously. */
   const writeStore = (immediate) => {              // debounced autosave → cloud
     clearTimeout(saveTimer);
     const push = () => {
@@ -427,9 +466,35 @@
       if (p && typeof p.catch === 'function') p.catch(() => {});   // v3.9: never an unhandled rejection
       return p;
     };
-    if (immediate) { push(); return; }             // 💾 Save / unload → no debounce
+    if (immediate === true || immediate === 'sync' || (immediate && immediate.type)) {
+      push();                                       // 💾 Save / unload → no debounce
+      return;
+    }
     saveTimer = setTimeout(push, 1200);
   };
+  /* v4.13 DH — ONE shared, honest "everything landed in the cloud" promise.
+     Previously each caller built its own fire-and-forget chain, so a click could
+     report success while the writes were still in flight (and unload writes were
+     silently dropped). Now every mutation awaits this before claiming Saved ✓. */
+  const syncNow = async () => {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(collectState())); } catch { /* full */ }
+    try { localStorage.setItem(DAYS_KEY, JSON.stringify({ list: collectDays() || [] })); } catch { /* full */ }
+    writeStore('sync');                             // fields (Day + Affidavit), no debounce
+    const acc = collectAccepts();
+    if (acc && window.CloudStore) {
+      const p = window.CloudStore.saveAccepts(acc);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+    if (typeof persistDays === 'function') persistDays();   // every day page (stamped HTML)
+    let res = { ok: true, pending: 0 };
+    try {
+      if (window.CloudStore && typeof window.CloudStore.awaitFlush === 'function') {
+        res = await window.CloudStore.awaitFlush(15000);
+      }
+    } catch { res = { ok: false, pending: 1 }; }
+    return res;
+  };
+  window.dhSyncNow = syncNow;                       // used by js/logbook.js & console recovery
   const softWarn = () => {
     const t = $('#cloud-status');
     if (t) { t.textContent = '☁️ Cloud offline — set js/supabase-config.js'; t.title = 'Not saved to cloud; entries live in this session only.'; }
@@ -459,24 +524,20 @@
   };
 
   const save = async (quiet, btn) => {
-    /* 1 · instant local snapshot (offline safety net) */
+    /* v4.13 DH — the whole save now runs through ONE audited path (syncNow):
+       local snapshot → fields + signatures + every day page to Supabase →
+       await the REAL completion of all queued writes before reporting. */
+    if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Saving…'; }
+    let res = { ok: true, pending: 0 };
     let localOk = true;
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(collectState()));
       localStorage.setItem(DAYS_KEY, JSON.stringify({ list: collectDays() || [] }));
     } catch { localOk = false; }
+    try { res = await syncNow(); } catch { res = { ok: false, pending: 1 }; }
 
-    /* 2 · push EVERYTHING to Supabase right now (no debounce) */
-    writeStore(true);                                   // fields incl. affidavit
-    const acc = collectAccepts();
-    if (acc && window.CloudStore) {
-      const p = window.CloudStore.saveAccepts(acc);
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-    }
-    if (typeof persistDays === 'function') persistDays();  // all created day pages
-
-    /* 2b · v4.4 DH — BDSM Log Book: if any day's pre-scene log form has
-       unsent entries, push them into the LOG BOOK'S OWN cloud (never ours). */
+    /* v4.4 DH — BDSM Log Book: if any day's pre-scene log form has unsent
+       entries, push them into the LOG BOOK'S OWN cloud (never ours). */
     try {
       if (typeof window.dhLogbookAutoPush === 'function') {
         $$('.page').filter(p => /^day\d+$/.test(p.id)).forEach(pg => {
@@ -486,14 +547,6 @@
       }
     } catch { /* log book offline → contract save unaffected */ }
 
-    /* 3 · wait for the writes to actually land, then tell the truth */
-    if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Saving…'; }
-    let res = { ok: true, pending: 0 };
-    try {
-      if (window.CloudStore && typeof window.CloudStore.awaitFlush === 'function') {
-        res = await window.CloudStore.awaitFlush(15000);
-      }
-    } catch { res = { ok: false, pending: 1 }; }
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || '💾 Save'; }
 
     if (!quiet) {
@@ -507,16 +560,41 @@
   /* ---------- visibility helpers (used by autosave AND the app lifecycle) ---------- */
   const pageVisible = () => document.visibilityState === 'visible';
 
+  /* v4.13 DH — every editable field gets its permanent identity stamp BEFORE the
+     first collect/apply pass, so keys never depend on DOM shape again. */
+  const ensureDhkStamps = () => { try { stampFields($('#main-contract') || document); } catch { /* ignore */ } };
+
   const applyFieldData = data => {
     if (!data) return;
+    ensureDhkStamps();
     $$('#main-contract input, #main-contract textarea, #main-contract select').forEach(el => {
       const slot = el.closest('.initials-slot');
       if (slot?.classList.contains('slot-filled')) return;   // sealed signature owns this field
       if (el.readOnly) return;                               // accept-date pills own their value
-      const k = keyFor(el);
-      if (!(k in data)) return;
-      if (el.type === 'checkbox') el.checked = !!data[k];
-      else el.value = data[k];
+      /* resolve the stored value across ALL historical key schemes:
+         v4.13 stable identity key → legacy element-id key → legacy DOM-path key.
+         First hit wins, so data saved by ANY older build still loads. */
+      const page = el.closest('.page');
+      const pid  = page ? page.id : 'head';
+      const dhk  = el.getAttribute(DHK_ATTR);
+      const pathKey = (() => {
+        const p = [];
+        for (let n = el; n && n !== page && n.id !== 'main-contract'; n = n.parentElement)
+          p.push(Array.from(n.parentElement.children).indexOf(n));
+        return `${pid}>${p.reverse().join('.')}`;
+      })();
+      const candidates = [];
+      if (dhk) candidates.push(`${pid}~${dhk}`);
+      if (el.id) candidates.push(`${pid}#${el.id}`, `head#${el.id}`);
+      candidates.push(pathKey);
+      let val;
+      let found = false;
+      for (const k of candidates) {
+        if (k in data) { val = data[k]; found = true; break; }
+      }
+      if (!found) continue;
+      if (el.type === 'checkbox') el.checked = !!val;
+      else el.value = val;
       if (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text' && el.maxLength === -1)) growInput(el);
     });
     autoGrowAll();
@@ -576,9 +654,13 @@
       const cloudCreated = (list || []).length;
       if (domCreated > cloudCreated && typeof persistDays === 'function') persistDays();
     }
-    if (!list || !list.length) return;
+    if (!list || !list.length) { ensureDhkStamps(); return; }
     /* v4.11 DH — adopt creation stamps that rode down with the cloud day list */
     adoptCreatedStamps(list);
+    /* v4.13 DH — mint identity stamps for any field that still lacks one (static
+       Day 1 / older saved HTML). Done BEFORE loadSaved() below so both devices
+       key their values off the SAME token from the first save onward. */
+    ensureDhkStamps();
     const summary = $('#summary');
     if (!summary) return;
     list.forEach(d => {
@@ -1105,6 +1187,12 @@
   /* v3.6 DH — keep multi-device sync fresh: whenever the tab regains focus /
      becomes visible, pull the latest cloud state and re-apply it. */
   let lastFocusSync = 0;
+  /* v4.13 DH — THE "SAME ON BOTH PHONES" RULE: a background/realtime refresh may
+     NOT overwrite fields the user is editing right now (previously every focus
+     event replayed the whole cloud mirror onto the live DOM — so half-typed text
+     on this phone got replaced by the other device's older copy, and it felt like
+     "sync keeps undoing my typing"). We snapshot the currently-focused field before
+     the replay and put its local value straight back afterwards. */
   const resyncFromCloud = () => {
     if (!window.CloudStore || typeof window.CloudStore.refresh !== 'function') return;
     const now = Date.now();
@@ -1113,9 +1201,22 @@
     Promise.resolve(window.CloudStore.refresh()).then(st => {
       if (!st) return;                                 // offline / not configured → keep current UI
       if (!overlay.classList.contains('hidden')) return; // locked → unlock() will replay on login
+      const ae = document.activeElement;
+      const protect = ae && ae.matches && ae.matches('#main-contract input, #main-contract textarea, #main-contract select')
+        ? { el: ae, key: keyFor(ae), value: ae.value, checked: ae.checked } : null;
+      if (protect) protect.el.dataset.dhkHold = '1';
       if (overlay.classList.contains('hidden')) restoreDays(window.CloudStore.days());
       loadSaved(window.CloudStore.fields());
       applySignatures();
+      if (protect) {
+        const target = document.querySelector(`[data-dhk-hold]`) || protect.el;
+        try {
+          if (target.type === 'checkbox') target.checked = !!protect.checked;
+          else target.value = protect.value;
+          target.focus({ preventScroll: true });
+        } catch { /* element gone (day deleted elsewhere) — nothing to protect */ }
+        delete target.dataset.dhkHold;
+      }
     }).catch(() => {});
   };
   window.addEventListener('focus', resyncFromCloud);
@@ -1158,6 +1259,10 @@
     const tpl = document.createElement('template');
     tpl.innerHTML = dayPageHTML(p).trim();
     const section = tpl.content.firstElementChild;
+    /* v4.13 DH — stamp the new page's fields with permanent identity tokens while
+       it is still detached, so persistDays() snapshots stamped HTML immediately and
+       the other device keys its values identically from the very first save. */
+    try { stampFields(section); } catch { /* ignore */ }
     setCreatedBadge(section, createdAtFor('day' + p.n));   // visible "🕒 Created …" chip
     const summary = $('#summary');
     $('#main-contract').insertBefore(section, summary);
@@ -2021,9 +2126,16 @@
        Pre-Scene Execution Affidavit values come back from Supabase.
        Called on create / delete / wipe / AI-write / Save. */
     if (!window.CloudStore) return;
+    /* v4.13 DH — stamp every field with its permanent identity token BEFORE the
+       outerHTML snapshot is taken, so the stamps ride along inside the saved/copied
+       day markup. The other phone restores the SAME tokens → the same sentence lands
+       under the same cloud key on both devices (this is what makes "only" identical
+       content across devices actually hold). Also carry the creation stamp and the
+       last-write time down with each entry for the other device to adopt. */
+    ensureDhkStamps();
     const list = $$('.page')
       .filter(p => dayNumber(p.id))
-      .map(p => ({ id: p.id, html: p.outerHTML }));
+      .map(p => ({ id: p.id, html: p.outerHTML, createdAt: createdAtFor(p.id) || null, updatedAt: Date.now() }));
     /* v4.2 DH — defensive capability checks: older browsers still holding a
        STALE cached js/cloud.js (pre-v4.1) threw
        "window.CloudStore.setMirrorDays is not a function" here, which killed

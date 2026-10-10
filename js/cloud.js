@@ -132,11 +132,81 @@
   const readLocalFields = () => {
     try { return JSON.parse(localStorage.getItem(LS_STORE_KEY)) || {}; } catch { return {}; }
   };
-  /* merge two [{id,html}] lists — cloud wins on id conflicts, extras kept */
+  /* v4.12 DH — permanent DELETED-DAY GUARD ("once ✖ Delete day is done, that
+     day must NEVER come back — not on this device, not on the other phone").
+     app.js writes tombstones into localStorage under 'dhContract.deleted.v1'
+     and exposes window.dhReadDeleted / dhAddDeleted; we ALSO read the raw key
+     here so even a device stuck on a stale cached app.js honours deletions.
+     Tombstoned ids are stripped from EVERY inbound/outbound list and from all
+     durable mirrors — the old union-merge used to resurrect deleted days from
+     stale snapshots. */
+  const LS_DELETED_KEY = 'dhContract.deleted.v1';
+  const readDeletedIds = () => {
+    let ids = [];
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_DELETED_KEY));
+      ids = (raw && Array.isArray(raw.ids)) ? raw.ids : (Array.isArray(raw) ? raw : []);
+    } catch { ids = []; }
+    try {
+      if (typeof window.dhReadDeleted === 'function') {
+        const extra = window.dhReadDeleted();
+        if (Array.isArray(extra)) ids = ids.concat(extra);
+      }
+    } catch { /* app.js not booted yet — raw key still guards */ }
+    const set = new Set();
+    ids.forEach(id => { if (typeof id === 'string' && /^day\d+$/.test(id)) set.add(id); });
+    return set;
+  };
+  /* record deletions observed in ANY list into the shared tombstone store too */
+  const rememberDeleted = ids => {
+    const arr = [].concat(ids || []).filter(id => typeof id === 'string' && /^day\d+$/.test(id));
+    if (!arr.length) return;
+    try {
+      if (typeof window.dhAddDeleted === 'function') { window.dhAddDeleted(arr); return; }
+    } catch { /* fall through to raw write */ }
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_DELETED_KEY));
+      const cur = new Set((raw && Array.isArray(raw.ids)) ? raw.ids : []);
+      arr.forEach(id => cur.add(id));
+      localStorage.setItem(LS_DELETED_KEY, JSON.stringify({ ids: [...cur], ts: Date.now() }));
+    } catch { /* storage unavailable — in-session guard still applies */ }
+  };
+  /* v4.12b DH — prune tombstoned days out of this device's durable local
+     copies (the DAYS_KEY snapshot app.js writes + our own mirror), so a
+     deleted day can never be re-attached from localStorage on reload/login.
+     'dhContract.deleted.v1' itself is NEVER touched here. */
+  const pruneLocalSnapshots = () => {
+    const del = readDeletedIds();
+    if (!del.size) return;
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_DAYS_KEY));
+      if (raw && Array.isArray(raw.list)) {
+        const kept = raw.list.filter(d => d && d.id && !del.has(d.id));
+        if (kept.length !== raw.list.length)
+          localStorage.setItem(LS_DAYS_KEY, JSON.stringify({ list: kept, ts: Date.now() }));
+      }
+    } catch { /* ignore */ }
+    try {
+      const m = JSON.parse(localStorage.getItem(LS_MIRROR_KEY));
+      if (m && Array.isArray(m.days)) {
+        const kept = m.days.filter(d => d && d.id && !del.has(d.id));
+        if (kept.length !== m.days.length) { m.days = kept; m.ts = Date.now(); localStorage.setItem(LS_MIRROR_KEY, JSON.stringify(m)); }
+      }
+    } catch { /* ignore */ }
+  };
+  /* drop every tombstoned day from a list (used on ALL inbound & outbound lists) */
+  const pruneDeleted = list => {
+    const del = readDeletedIds();
+    if (!del.size) return list;
+    return (Array.isArray(list) ? list : []).filter(d => d && d.id && !del.has(d.id));
+  };
+
+  /* merge two [{id,html}] lists — cloud wins on id conflicts, extras kept.
+     v4.12 DH — tombstoned (deleted) days are pruned from BOTH sides first. */
   const mergeDays = (cloudList, localList) => {
     const map = new Map();
-    (Array.isArray(localList) ? localList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
-    (Array.isArray(cloudList) ? cloudList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
+    pruneDeleted(Array.isArray(localList) ? localList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
+    pruneDeleted(Array.isArray(cloudList) ? cloudList : []).forEach(d => { if (d && d.id && d.html) map.set(d.id, d); });
     return Array.from(map.values())
       .sort((a, b) => ((parseInt((/^day(\d+)/.exec(a.id) || [])[1], 10) || 0) -
                        (parseInt((/^day(\d+)/.exec(b.id) || [])[1], 10) || 0)));
@@ -217,7 +287,21 @@
       /* NOTE: 'wiped' rows are intentionally IGNORED from now on — the
          sticky auto-wipe behaviour is removed (v4.0). */
     });
-    mem.days   = mergeDays(cloud.days, mergeDays(mem.days, localDays));
+    /* v4.12 DH — remember every day id that VANISHED from the authoritative
+       cloud list as deleted (tombstoned): deletions performed on the other
+       device now stick permanently on this one too, even against stale local
+       snapshots / durable mirrors. */
+    if (Array.isArray(cloud.days)) {
+      const cloudIds = new Set(cloud.days.filter(d => d && d.id).map(d => d.id));
+      const gone = [];
+      [...mem.days, ...(localDays || [])].forEach(d => {
+        if (d && /^day\d+$/.test(d.id) && !cloudIds.has(d.id)) gone.push(d.id);
+      });
+      if (gone.length) rememberDeleted(gone);
+    }
+    mem.days   = pruneDeleted(mergeDays(cloud.days, mergeDays(mem.days, localDays)));
+    /* v4.12b DH — also scrub tombstoned days out of localStorage snapshots */
+    pruneLocalSnapshots();
     mem.fields = Object.assign({}, localFields, mem.fields || {}, cloud.fields || {});
     if (cloud.accepts) mem.accepts = cloud.accepts;
     else if (mirrorSnap && mirrorSnap.accepts) mem.accepts = mirrorSnap.accepts;
@@ -362,14 +446,28 @@
        day list still lands in Supabase. */
     setMirrorDays(list) {
       if (!Array.isArray(list)) return Promise.resolve(false);
-      mem.days = mergeDays(list.filter(d => d && d.id && d.html), []);
+      /* v4.12 DH — REPLACE (not union): the incoming DOM snapshot is the single
+         source of truth, so a day the user just deleted on this device can no
+         longer survive in the mirror via an old merged copy. Anything that was
+         in the mirror but is missing from the new list is tombstoned permanently
+         and pruned from the local snapshots / durable mirror too. */
+      const next = pruneDeleted(list.filter(d => d && d.id && d.html));
+      const nextIds = new Set(next.map(d => d.id));
+      const gone = [];
+      [...mem.days, ...(readLocalDays() || []), ...((readMirrorLocal() || {}).days || [])].forEach(d => {
+        if (d && /^day\d+$/.test(d.id) && !nextIds.has(d.id)) gone.push(d.id);
+      });
+      if (gone.length) rememberDeleted(gone);
+      mem.days = pruneDeleted(next);
       writeMirrorLocal();
+      pruneLocalSnapshots();
       return upsert('days', mem.days);
     },
     /* v4.1 DH — saveDays MERGES with the mirror instead of replacing it, so an
        AI day captured by one code path is never dropped by another path that
-       ran with a slightly older DOM snapshot. */
-    saveDays(list)     { mem.days = mergeDays(list, mem.days); writeMirrorLocal(); return upsert('days', mem.days); },
+       ran with a slightly older DOM snapshot.
+       v4.12 DH — mergeDays now prunes every tombstoned (deleted) day first. */
+    saveDays(list)     { mem.days = pruneDeleted(mergeDays(list, mem.days)); writeMirrorLocal(); pruneLocalSnapshots(); return upsert('days', mem.days); },
     /* v4.0 DH — no-op kept for backwards compatibility with app.js v3.x calls.
        The sticky "wiped" flag is dead: nothing may auto-clear days anymore. */
     saveWiped()        { return Promise.resolve(true); },
