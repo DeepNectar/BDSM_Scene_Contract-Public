@@ -592,7 +592,7 @@
       for (const k of candidates) {
         if (k in data) { val = data[k]; found = true; break; }
       }
-      if (!found) continue;
+      if (!found) return;                                    // v4.13b — `continue` inside forEach is illegal JS and crashed app.js at boot on EVERY device, killing login AND all cross-device sync
       if (el.type === 'checkbox') el.checked = !!val;
       else el.value = val;
       if (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text' && el.maxLength === -1)) growInput(el);
