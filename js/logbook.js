@@ -1100,6 +1100,12 @@
 
   /* hooks so app.js keeps NEW/AI-created days integrated too */
   window.dhLogbookSync = () => { ensureFeedSlots(); wireForms(); wireButtons(); try { window.dhWrapTables && window.dhWrapTables(document); } catch { /* ignore */ } sync(true); };
+  /* v4.15 DH — LIGHTWEIGHT prep hook for app.js's collectState(): inject + wire
+     every 📔 pre-scene log-book form (so its inputs exist and can be identity-
+     stamped → saved into the cloud 'fields' row → loaded on the other device)
+     WITHOUT the network pull that dhLogbookSync does. app.js calls this before
+     EVERY field collection, so it must never fire off REST requests itself. */
+  window.dhLogbookPrepDom = () => { ensureFeedSlots(); wireForms(); wireButtons(); try { window.dhWrapTables && window.dhWrapTables(document); } catch { /* ignore */ } };
   window.dhLogbookRefreshDom = () => { ensureFeedSlots(); wireForms(); wireButtons(); try { window.dhWrapTables && window.dhWrapTables(document); } catch { /* ignore */ } refreshAll(); };
   /* called by app.js after 💾 Save: pushes a day's form if it is dirty */
   window.dhLogbookAutoPush = (pageEl) => {

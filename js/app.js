@@ -47,6 +47,12 @@
      v3.4 DH: STORE_KEY was referenced but never declared, which threw a
      ReferenceError on every save/load and made the whole app look dead. */
   var STORE_KEY = 'dhContract.fields.v1';   // var → readable everywhere in this IIFE & the SW
+  /* v4.15 DH — "log book data must be saved too": a day's 📔 BDSM Log Book
+     Pre-Scene form is injected by js/logbook.js AFTER our first collectState()
+     pass, so its inputs could miss their identity stamps and never reach the
+     cloud 'fields' row (and thus never load on the other device). app.js now
+     tells logbook.js to inject + wire every lb-form BEFORE each collection. */
+  const lbPrep = () => { try { (window.dhLogbookPrepDom || window.dhLogbookSync) && (window.dhLogbookPrepDom || window.dhLogbookSync)(); } catch { /* ignore */ } };
   var PW_KEY    = 'dhContract.pw.v1';        // install-prompt bookkeeping (device-local only)
 
   /* ---------- day ids / static pages — declared FIRST so every helper below
@@ -453,6 +459,7 @@
   };
 
   const collectState = () => {
+    lbPrep();                                          /* v4.15 — inject/wire every 📔 log-book form BEFORE stamping, so its fields get identity stamps and ride along in 'fields' to the cloud */
     ensureDhkStamps();                                  /* v4.13 — stamp before keying */
     const data = {};
     $$('#main-contract input:not([type="checkbox"]):not([type="password"]), #main-contract textarea, #main-contract select')
