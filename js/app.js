@@ -54,10 +54,15 @@
      ReferenceError. v3.5 DH: these used to be declared hundreds of lines lower,
      which is exactly how "Cannot access 'X' before initialization" crashes kept
      coming back at boot on some devices/browsers. ---------- */
-  const STATIC_IDS = new Set(['day1']);   /* days shipped in index.html — v4.0 DH:
-                                              Day 1 is now ALSO persisted to the cloud
-                                              so a full re-login rebuilds every day,
-                                              including edited static pages. */
+  const STATIC_IDS = new Set();            /* v4.14 DH — NO hardcoded days any more.
+                                              index.html ships with ZERO day pages
+                                              (only the summary), so nothing is ever
+                                              auto-created / auto-deleted from a
+                                              hard-coded list. Every day you see comes
+                                              exclusively from the cloud (Supabase) or
+                                              from your own ➕ Add blank day / ✨ AI
+                                              buttons. The set is kept empty as a hook
+                                              for restoreDays() only. */
   const dayNumber = id => { const m = /^day(\d+)$/.exec(id); return m ? +m[1] : null; };
 
   /* v4.13f DH — localStorage HARDENING: privacy mode / opaque-origin / some
@@ -658,12 +663,41 @@
        page can never trigger a re-persist that resurrects a deleted day. */
     {
       const delSet = new Set(readDeleted());
-      const domCreated = $$('.page').filter(p => dayNumber(p.id) && !delSet.has(p.id)).length;
+      const domPages = $$('.page').filter(p => dayNumber(p.id) && !delSet.has(p.id));
       const cloudCreated = (list || []).length;
-      if (domCreated > cloudCreated && typeof persistDays === 'function') persistDays();
+      if (domPages.length > cloudCreated && typeof persistDays === 'function') persistDays();
+      /* v4.14b DH — THE "created day never syncs / missing after re-login" FIX:
+         with NO hardcoded days any more, the cloud list is the SOLE source of
+         truth. If a page already sits in the DOM whose stamp is OLDER than the
+         inbound list, the DOM copy predates the newest save → replace it with
+         the fresh cloud copy instead of leaving stale content on screen. */
+      if (list && list.length) {
+        const byId = new Map(list.map(d => [d && d.id, d]));
+        domPages.forEach(p => {
+          const src = byId.get(p.id);
+          if (!src || !src.html) return;
+          const cloudTs = +(src.updatedAt || src.createdAt || 0);
+          const domTs   = +(p.dataset.dhUpdated || 0);
+          if (cloudTs && domTs && cloudTs > domTs) {
+            try {
+              const tplU = document.createElement('template');
+              tplU.innerHTML = String(src.html).trim();
+              const fresh = tplU.content.firstElementChild;
+              if (fresh && fresh.tagName === 'SECTION') {
+                fresh.dataset.dhUpdated = String(cloudTs);
+                p.replaceWith(fresh);
+                if (typeof wireNewDay === 'function') wireNewDay(fresh);
+              }
+            } catch { /* keep local copy */ }
+          }
+        });
+      }
     }
-    if (!list || !list.length) { ensureDhkStamps(); return; }
-    /* v4.11 DH — adopt creation stamps that rode down with the cloud day list */
+    if (!list || !list.length) { updateEmptyState(); ensureDhkStamps(); return; }
+    /* v4.14 DH — the "no hardcoded days" guarantee: when a cloud/local list IS
+       present it is the ONLY source of day pages, so the empty banner must be
+       removed (it can linger from an earlier empty restore). */
+    updateEmptyState();
     adoptCreatedStamps(list);
     /* v4.13 DH — mint identity stamps for any field that still lacks one (static
        Day 1 / older saved HTML). Done BEFORE loadSaved() below so both devices
@@ -699,30 +733,44 @@
         }
       }
       const existing = $('#' + d.id);
-      if (existing) {
-        /* v4.0 DH — cloud copy wins for STATIC pages (Day 1): replace the
-           index.html skeleton with the exact saved content so edited values /
-           checklist state come back verbatim on re-login. Created (AI/blank)
-           pages are left untouched when already present to avoid clobbering
-           in-progress typing. */
-        if (STATIC_IDS.has(d.id)) {
-          try {
-            const tpl = document.createElement('template');
-            tpl.innerHTML = String(d.html).trim();
-            const fresh = tpl.content.firstElementChild;
+      if (existing && !existing.closest('#main-contract')) {
+        /* v4.14 DH — a same-id element exists but is NOT a day page inside the
+           contract (e.g. leftover markup) → drop it and attach the cloud copy. */
+        try { existing.remove(); } catch { /* ignore */ }
+      } else if (existing) {
+        /* v4.14 DH — NO hardcoded/static day pages any more: every page in the DOM
+           came from a previous restore or from ➕/✨ creation on this device, so we
+           must NOT blindly re-attach the cloud copy (that would duplicate the page
+           and could clobber in-progress typing). Only refresh a stale restored page
+           when the CLOUD copy is genuinely newer than what this DOM holds; a page
+           whose saved HTML carries no updatedAt stamp keeps its local content
+           (persistDays() below pushes it back up instead). */
+        try {
+          const cloudTs  = +(d.updatedAt || d.createdAt || 0);
+          const domEl    = existing.closest('.page') || existing;
+          const domTs    = +(domEl.dataset.dhUpdated || 0);
+          if (cloudTs && (!domTs || cloudTs > domTs)) {
+            const tplC = document.createElement('template');
+            tplC.innerHTML = String(d.html).trim();
+            const fresh = tplC.content.firstElementChild;
             if (fresh && fresh.tagName === 'SECTION') {
+              fresh.dataset.dhUpdated = String(cloudTs);
               existing.replaceWith(fresh);
               if (typeof wireNewDay === 'function') wireNewDay(fresh);
             }
-          } catch { /* keep the static skeleton if swap fails */ }
-        }
+          }
+        } catch { /* keep the local page if the swap fails */ }
+      } else {
+        const tpl = document.createElement('template');
+        tpl.innerHTML = String(d.html).trim();
+        const section = tpl.content.firstElementChild;
+        if (!section || section.tagName !== 'SECTION') return;
+        /* remember the write-time of the copy we just attached, so future
+           restores can tell "cloud newer" from "local newer" per day */
+        try { section.dataset.dhUpdated = String(+(d.updatedAt || d.createdAt || 0) || ''); } catch { /* ignore */ }
+        $('#main-contract').insertBefore(section, summary);
+        if (typeof wireNewDay === 'function') wireNewDay(section);
       }
-      const tpl = document.createElement('template');
-      tpl.innerHTML = String(d.html).trim();
-      const section = tpl.content.firstElementChild;
-      if (!section || section.tagName !== 'SECTION') return;
-      $('#main-contract').insertBefore(section, summary);
-      if (typeof wireNewDay === 'function') wireNewDay(section);
     });
     /* v4.11b — make sure every restored page visibly carries its creation stamp:
        scrape a "🕒 Created …" chip baked into the stored HTML into the local map,
