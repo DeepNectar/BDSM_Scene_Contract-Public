@@ -93,6 +93,31 @@
               'Supabase unreachable (wrong URL/key, paused free project, or no network); entries exist in this session only.');
   };
 
+  /* v4.17 DH — ONE-TIME TOMBSTONE RESET (self-heal for the "created days /
+     ✨ AI-written day never appear on the other device after login" bug).
+     Root cause found live in the cloud: the shared 'deleted' key carried a
+     stale tombstone for `day1` while the 'days' list was empty — every pull
+     then pruned Day 1 out of both lists, so nothing restored anywhere and
+     each device kept re-pushing the tombstone back up (permanent deadlock).
+     Tombstones are meant to be LOCAL UX state ('dhContract.deleted.v1');
+     the SHARED cloud copy is now wiped exactly once per device build, all
+     local tombstone stores are cleared, and the fresh (empty) 'deleted' map
+     is pushed up so both devices converge. Real deletions still work —
+     ✖ Delete day writes NEW tombstones after this point as normal. */
+  const TOMB_RESET_KEY = 'dhContract.tombReset.v417';
+  try {
+    if (!safeGet(TOMB_RESET_KEY)) {
+      safeSet(TOMB_RESET_KEY, String(Date.now()));
+      ['dhContract.deleted.v1',            // app.js + cloud.js shared tombstones
+       'dhContract.cloud.v413e',           // durable mirror (may hold pruned state)
+       'dhContract.days.v1'                // offline day snapshot
+      ].forEach(k => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
+      if (sb) sb.from('contract_state').upsert({ k: 'deleted', v: {}, last_writer: 'tomb-reset-v417' })
+        .then(() => console.log('[cloud] v4.17 tombstone reset pushed')).catch(() => {});
+      console.log('[cloud] v4.17 — stale deletion tombstones cleared; created days will restore & sync again.');
+    }
+  } catch { /* storage unavailable — cloud reset still attempted above */ }
+
   /* ---------- in-memory mirror + localStorage safety net ---------- */
   /* v4.0 DH — the "auto wipe" bug: `wiped` used to be a STICKY cloud flag that
      made every reload/login start with an EMPTY contract. That behaviour is
