@@ -21,11 +21,25 @@
 
 -- ------------------------------------------------------------
 -- 0) CLEAN SLATE — remove old objects first (idempotent)
+--    NOTE: we never drop the built-in "supabase_realtime" publication
+--    itself (Supabase manages it); we only remove our table from it
+--    and re-add it later. This avoids permission errors.
 -- ------------------------------------------------------------
-drop trigger      if exists contract_state_touch on public.contract_state;
-drop function     if exists public.touch_updated_at();
-drop publication  if exists supabase_realtime;
-drop table        if exists public.contract_state;
+drop trigger   if exists contract_state_touch on public.contract_state;
+drop function  if exists public.touch_updated_at();
+drop policy    if exists "contract rw" on public.contract_state;
+
+do $$
+begin
+  if exists (select 1 from pg_publication_tables
+             where pubname = 'supabase_realtime'
+               and schemaname = 'public'
+               and tablename  = 'contract_state') then
+    execute 'alter publication supabase_realtime drop table public.contract_state';
+  end if;
+end $$;
+
+drop table if exists public.contract_state;
 
 -- ------------------------------------------------------------
 -- 1) THE STATE TABLE (key/value JSONB store) — recreated fresh
@@ -74,9 +88,16 @@ create policy "contract rw"
 
 -- ------------------------------------------------------------
 -- 4) REALTIME — instant multi-device sync
---    Recreated from scratch because the table was dropped above.
+--    Add our (freshly recreated) table to the built-in Supabase
+--    realtime publication. Created defensively if it is missing.
 -- ------------------------------------------------------------
-create publication supabase_realtime;
+do $$
+begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+end $$;
+
 alter publication supabase_realtime add table public.contract_state;
 
 -- complete payloads for realtime listeners
