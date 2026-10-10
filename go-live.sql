@@ -1,5 +1,5 @@
 -- ============================================================
--- Deep & Honey · Eternal Contract — GO-LIVE SQL (v4.14 DH)
+-- Deep & Honey · Eternal Contract — GO-LIVE SQL (v4.16 DH)
 -- Project: qbnxcfwwsuqfmearyris (https://qbnxcfwwsuqfmearyris.supabase.co)
 --
 -- 👉 Paste this ENTIRE file into:
@@ -12,8 +12,11 @@
 --   'fields'   → EVERY text entry across the whole contract, including
 --                all Pre-Scene Execution Affidavit inputs/textareas AND
 --                every 📔 BDSM Log Book pre-scene form input inside the
---                affidavit (v4.15: app.js wires those forms before each
---                collection so their values ride along to the cloud)
+--                affidavit (v4.15/v4.16: app.js injects + wires those forms
+--                before every collection, so EVERY log-book input/select
+--                — mood, follow-through, safeword, ratings, feelings, both
+--                feedback sheets — rides along to the cloud under stable
+--                data-dhk identity keys and reappears on every device)
 --   'accepts'  → signature / acceptance ("I accept") data per area+party
 --   'days'     → FULL HTML of EVERY day section created on any device
 --                (➕ blank day / ✨ AI-written day) — no hardcoded days;
