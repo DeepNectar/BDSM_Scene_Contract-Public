@@ -104,7 +104,7 @@
      local tombstone stores are cleared, and the fresh (empty) 'deleted' map
      is pushed up so both devices converge. Real deletions still work —
      ✖ Delete day writes NEW tombstones after this point as normal. */
-  const TOMB_RESET_KEY = 'dhContract.tombReset.v417';
+  const TOMB_RESET_KEY = 'dhContract.tombReset.v418';
   try {
     if (!safeGet(TOMB_RESET_KEY)) {
       safeSet(TOMB_RESET_KEY, String(Date.now()));
@@ -112,11 +112,83 @@
        'dhContract.cloud.v413e',           // durable mirror (may hold pruned state)
        'dhContract.days.v1'                // offline day snapshot
       ].forEach(k => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
-      if (sb) sb.from('contract_state').upsert({ k: 'deleted', v: {}, last_writer: 'tomb-reset-v417' })
-        .then(() => console.log('[cloud] v4.17 tombstone reset pushed')).catch(() => {});
-      console.log('[cloud] v4.17 — stale deletion tombstones cleared; created days will restore & sync again.');
+      if (sb) sb.from('contract_state').upsert({ k: 'deleted', v: {}, last_writer: 'tomb-reset-v418' })
+        .then(() => console.log('[cloud] v4.18 tombstone reset pushed')).catch(() => {});
+      console.log('[cloud] v4.18 — stale deletion tombstones cleared; created days will restore & sync again.');
     }
   } catch { /* storage unavailable — cloud reset still attempted above */ }
+
+  /* v4.18 DH — hoisted ABOVE latestDayWrite/readDeletedIds/applyRows: the most
+     recent server rows we have seen (from any pull); mergeKeyValues() unions
+     writes against these so a save from this device can never erase another
+     device's newer values that we already know about. */
+  let lastServerRows = [];
+  const fetchState = async () => {
+    if (!sb) return [];
+    /* updated_at is pulled too: LWW falls back to it for legacy unstamped rows */
+    const { data, error } = await sb.from('contract_state').select('k,v,updated_at');
+    if (error) throw error;
+    lastServerRows = Array.isArray(data) ? data : [];
+    return data;
+  };
+  /* v4.18 DH — direct write used by healCloudTombstones() before the main
+     runWrite/upsert definitions are reached (same payload shape). */
+  const tombResetUpsert = (k, v, writer) => {
+    if (!sb) return Promise.resolve(false);
+    return sb.from('contract_state').upsert({ k, v, last_writer: writer })
+      .then(({ error }) => !error).catch(() => false);
+  };
+
+  /* ---------- v4.18 DH — SELF-HEALING CLOUD TOMBSTONES (THE login fix) ----------
+     Root cause of "after login the day is not previewed / not synced from the
+     cloud": the SHARED 'deleted' key in Supabase carried a stale tombstone for
+     `day1` while the 'days' list was empty. Every device re-read that tombstone
+     on every pull (readDeletedIds merges it back even after a local reset), so
+     pruneDeleted() stripped Day 1 and every restored page out of ALL lists —
+     nothing could ever appear again, and each save re-pushed the tombstone up
+     (permanent deadlock across devices).
+
+     New rule: a CLOUD tombstone may hide a day ONLY while its timestamp is
+     newer than the newest updatedAt among all known copies of that day (cloud
+     'days' row, durable mirror, offline snapshot, in-memory list). A tombstone
+     older than the day's own data is STALE → ignored locally AND purged from
+     the cloud by healCloudTombstones(), which runs after every pull. Genuine
+     deletions still work exactly as before: ✖ Delete day writes a NEWER
+     tombstone than any existing copy, so it keeps hiding the day everywhere. */
+  const latestDayWrite = id => {
+    let best = 0;
+    const consider = list => (Array.isArray(list) ? list : []).forEach(d => {
+      if (d && d.id === id) { const t = +(d.updatedAt || d.createdAt || 0); if (t > best) best = t; }
+    });
+    try { consider(serverRowVal('days')); } catch { /* no rows yet */ }
+    try { const m = readMirrorLocal(); if (m) consider(m.days); } catch { /* ignore */ }
+    try { const l = readLocalDays(); consider(l && Array.isArray(l.list) ? l.list : l); } catch { /* ignore */ }
+    consider(mem.days);
+    return best;
+  };
+  const cloudTombstonesUsable = () => {
+    const r = (() => { try { return serverRowVal('deleted'); } catch { return null; } })();
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return {};
+    const out = {};
+    Object.entries(r).forEach(([id, t]) => {
+      if (typeof id !== 'string' || typeof t !== 'number') return;
+      if (!(t > latestDayWrite(id))) return;   // stale → this tombstone hides nothing
+      out[id] = t;
+    });
+    return out;
+  };
+  const healCloudTombstones = () => {
+    if (!sb) return;
+    try {
+      const r = serverRowVal('deleted');
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return;
+      const kept = cloudTombstonesUsable();
+      if (Object.keys(kept).length === Object.keys(r).length) return; // all fresh — nothing to purge
+      tombResetUpsert('deleted', kept, 'tomb-heal-v418').then(ok => {
+        if (ok) console.log('[cloud] v4.18 — stale cloud tombstones purged; hidden days will restore on every device.');
+      }).catch(() => {});
+    } catch { /* ignore */ }
+  };
 
   /* ---------- in-memory mirror + localStorage safety net ---------- */
   /* v4.0 DH — the "auto wipe" bug: `wiped` used to be a STICKY cloud flag that
@@ -208,7 +280,12 @@
     try {
       const r = lastServerRows.find(x => x && x.k === 'deleted');
       if (r && r.v && typeof r.v === 'object') Object.entries(r.v).forEach(([id, t]) => {
-        if (typeof id === 'string' && /^day\d+$/.test(id) && typeof t === 'number' && !(id in map)) map[id] = t;
+        /* v4.18 DH — stale-tombstone guard: only honour a cloud tombstone that
+           is NEWER than the newest known write of that day. Older tombstones
+           (e.g. the historic day1 deadlock) hide nothing and are purged from
+           the cloud by healCloudTombstones() after every pull. */
+        if (typeof id === 'string' && /^day\d+$/.test(id) && typeof t === 'number'
+            && !(id in map) && t > latestDayWrite(id)) map[id] = t;
       });
     } catch { /* no server rows yet */ }
     const set = new Set();
@@ -570,10 +647,16 @@
     });
     /* v4.13e DH — adopt CLOUD tombstones into this device's local store so a
        day deleted on the other phone stays deleted here too (explicitly — we
-       no longer treat "missing from the list" as a deletion). */
+       no longer treat "missing from the list" as a deletion).
+       v4.18 DH — only FRESH tombstones are adopted: a tombstone older than the
+       newest known write of that day is stale and must never hide the day. */
     if (cloud.deleted) {
-      mem.deleted = Object.assign({}, mem.deleted || {}, cloud.deleted);
-      const ids = Object.keys(cloud.deleted);
+      const fresh = {};
+      Object.entries(cloud.deleted).forEach(([id, t]) => {
+        if (typeof t === 'number' && t > latestDayWrite(id)) fresh[id] = t;
+      });
+      mem.deleted = Object.assign({}, mem.deleted || {}, fresh);
+      const ids = Object.keys(fresh);
       if (ids.length) rememberDeleted(ids);
     }
     /* per-day LAST-WRITER-WINS across server row / durable mirror / app
@@ -609,21 +692,13 @@
     /* push any local tombstones the cloud does not know about yet (e.g. a
        deletion performed while this device was offline) */
     if (Object.keys(mem.deleted || {}).some(id => !(cloud.deleted && id in cloud.deleted))) pushDeletedTombstones();
+    /* v4.18 DH — after every pull, purge STALE cloud tombstones so a day that
+       still exists anywhere can never stay hidden across devices */
+    healCloudTombstones();
   };
 
-  /* v4.13f DH — hoisted ABOVE every user (upsertMerged now pulls through it).
-     The most recent server rows we have seen (from any pull); mergeKeyValues()
-     unions writes against these so a save from this device can never erase
-     another device's newer values that we already know about. */
-  let lastServerRows = [];
-  const fetchState = async () => {
-    if (!sb) return [];
-    /* updated_at is pulled too: LWW falls back to it for legacy unstamped rows */
-    const { data, error } = await sb.from('contract_state').select('k,v,updated_at');
-    if (error) throw error;
-    lastServerRows = Array.isArray(data) ? data : [];
-    return data;
-  };
+  /* v4.18 DH — lastServerRows/fetchState hoisted to the top of the IIFE
+     (before latestDayWrite / readDeletedIds / applyRows). */
 
   /* v4.13f DH — write QUEUE: one lane per cloud key, strictly serialised.
      Without this, two upserts of the same key fired back-to-back (e.g. the
