@@ -10,6 +10,7 @@
 'use strict';
 
 const CACHE_NAME = 'dh-contract-v52';
+const CACHE_NAME = 'dh-contract-v51';
 const APP_SHELL = [
   './',
   './index.html',
