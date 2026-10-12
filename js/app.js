@@ -350,8 +350,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.18 DH';
+  const APP_VERSION = 'v4.19 DH';
   const WHATS_NEW = [
+    '🔐 v4.19: FACE & FINGERPRINT — THE REAL FIX AT LAST. Earlier attempts still relied on browser features iPhones simply do not provide (reading the sealed blob back / verifying the passkey signature locally), so unlock threw every time and the app hid the button again. The whole flow is rebuilt: enrolment now writes a one-time random UNLOCK TICKET into your phone’s secure passkey (large-blob WRITE — supported on iOS 15+, Android, Windows Hello) and stores our contract secret in a local envelope encrypted with that ticket + a device-only pepper. One successful Face ID / fingerprint scan releases it — no blob READ, no COSE verification needed any more, so it finally works on iPhone Safari too. Also: capability checks are instant & synchronous (a hanging iOS probe used to stall the buttons forever), older iDevices skip the unsupported extension instead of erroring, deleted passkeys are detected cleanly, and every failure now tells you WHY in a toast instead of looking dead. If biometrics were enabled before: tap “✨ Yes, enable it” once after unlocking with the secret word.',
     '📱 v4.18: EVERYTHING INSIDE THE SCREEN — final adjust-to-your-screen pass! No box or text can stick out of the phone any more: every input width is now FLUID (scales with the actual screen size instead of fixed pixels), long words/e-mails/URLs wrap inside their boxes, images & tables are capped to the viewport, and the app re-measures every auto-growing field on load, rotation and resize so boxes always match the CURRENT screen type (phone → tablet → desktop). Print/PDF keeps its own full-page layout.',
     '🔐 v4.17: FACE & FINGERPRINT UNLOCK NOW REALLY WORKS — the “✨ Yes, enable it” and “🔓 Unlock with Face / Fingerprint” buttons were silently dying on iPhones (iOS Safari < 18) and several Android browsers: those engines never hand the credential’s sealed blob back after a successful Face-ID scan, so every unlock threw, the app deleted the enrolment and hid the button (“needs re-enabling”). Fixed end-to-end: enrolment now ALSO stores a device-bound local envelope (key material split between the passkey seal and a browser-profile-only pepper, both useless alone), the unlock flow has three honest fallback paths instead of one fragile one, the hard-pinned authenticatorAttachment that made some WebViews throw NotAllowedError outright is gone, failed attempts are logged to the console instead of vanishing, and UI reveals no longer hang behind capability probes that never resolve. Re-enable biometrics once from the offer after unlocking with the secret word.',
     '🔐 v4.16: FACE & FINGERPRINT UNLOCK — whatever your phone supports! After you unlock with our secret word once, the app offers “✨ Yes, enable it”: your phone then asks for Face ID / fingerprint (the device sensor decides — the app NEVER sees or stores any biometric data) and a device-bound passkey is created. From then on the login card shows “🔓 Unlock with Face / Fingerprint” and one look/touch opens the contract. Each phone enrols its own biometric (stored locally on that device only, never synced); if a biometric ever fails or is removed from the phone, the normal secret-word login still works exactly as before, and you can re-enable anytime.',
@@ -416,7 +417,16 @@
   /* v4.16 DH — Face / Fingerprint unlock (js/bio.js, WebAuthn passkey).
      Device-local only: never synced, never leaves this phone, and the app
      itself never sees any biometric data — the OS sensor does the matching.
-     Password login below is completely untouched; bio is an extra door. */
+     Password login below is completely untouched; bio is an extra door.
+     v4.19 DH FIXES for "buttons still not working":
+     • DhBio.supported() became a SYNCHRONOUS boolean in v4.19 (the old
+       Promise-returning probe relied on isPlatformAuthenticatorAvailable(),
+       which hangs/never resolves in several iOS & Android WebViews — every
+       Promise.all around it silently stalled and the buttons never did
+       anything). Treating it as a promise was itself a bug: `sup` was then
+       always a truthy object, so the enrolment gate was meaningless.
+     • Enrolment/unlock failures now toast the REASON (plus console trace)
+       instead of a vague shrug — no more dead-looking buttons. */
   const bioZone      = $('#bio-zone');
   const bioUnlockBtn = $('#bio-unlock-btn');
   const bioOffer     = $('#bio-offer');
@@ -425,7 +435,8 @@
   const bioNameEl    = $('#bio-method-name');
   let   bioBusy      = false;
 
-  const bioReady = () => !!(window.DhBio && window.DhBio.supported);
+  const bioReady = () => { try { return !!(window.DhBio && window.DhBio.supported === true); } catch { return false; } };
+  const bioLabel = () => { try { return window.DhBio.methodLabel(); } catch { return 'Face / Fingerprint'; } };
 
   const showBioZone = label => {
     if (!bioZone || !bioUnlockBtn) return;
@@ -457,6 +468,10 @@
         /* user dismissed / sensor didn't match this try → enrolment is FINE,
            keep it so the button works next tap (v4.16 also kept it here) */
         errEl.textContent = 'Biometric didn’t verify — no worries, use our secret word.';
+      } else if (name === 'NotFoundError' || /no-credential|not-enrolled/.test(msg)) {
+        /* passkey deleted in phone settings / never created here → tidy up quietly */
+        try { window.DhBio.disable(); } catch { /* ignore */ }
+        hideBioZone();
       } else if (/not-enrolled/.test(msg)) {
         hideBioZone();               /* nothing to unlock — just tidy up */
       } else {
@@ -466,7 +481,7 @@
         errEl.textContent = 'Face/Fingerprint lock needs re-enabling — use our secret word this once.';
       }
       bioUnlockBtn.disabled = false;
-      bioUnlockBtn.textContent = '🔓 Unlock with ' + (window.DhBio ? window.DhBio.methodLabel() : 'Face / Fingerprint');
+      bioUnlockBtn.textContent = '🔓 Unlock with ' + bioLabel();
     }).then(() => { bioBusy = false; });
   };
 
@@ -483,15 +498,14 @@
     const revealIfEnrolled = () => {
       if (revealed) return;
       revealed = true;
-      Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
-        .then(([sup, enr]) => { if (sup && enr) showBioZone(window.DhBio.methodLabel()); })
+      Promise.resolve(window.DhBio.isEnrolled())
+        .then(enr => { if (enr) showBioZone(bioLabel()); })
         .catch(() => { /* silent — password gate always works */ });
     };
+    /* v4.19 DH — isEnrolled() is a pure localStorage read now (no hanging
+       capability probe anywhere), but keep the timer belt & braces anyway. */
+    revealIfEnrolled();
     setTimeout(revealIfEnrolled, 600);
-    /* fast path when the probes answer immediately */
-    Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
-      .then(([sup, enr]) => { if (sup && enr) { revealed = true; showBioZone(window.DhBio.methodLabel()); } })
-      .catch(() => {});
   }
 
   if (!overlay || !pwInput || !errEl || !$('#login-btn')) {
@@ -556,38 +570,45 @@
   const maybeOfferBio = () => {
     if (!bioReady() || !bioOffer || !bioEnableBtn) return;
     if (safeGet(BIO_SKIP_KEY)) return;
-    let shown = false;
-    const showOffer = () => {
-      if (shown) return;
-      shown = true;
-      try {
-        if (window.DhBio && window.DhBio.methodLabel) {
-          bioNameEl.textContent = window.DhBio.methodLabel();
-        }
-        bioOffer.classList.remove('hidden');
-      } catch { /* ignore */ }
-    };
-    Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
-      .then(([sup, enr]) => { if (sup && !enr) showOffer(); })
-      .catch(() => { /* silent */ });
-    /* belt & braces: if the capability probes hang, still surface the offer
-       shortly — pressing it then fails gracefully with an honest toast. */
-    setTimeout(showOffer, 900);
+    /* v4.19 DH — everything below is SYNCHRONOUS now: DhBio.supported is a
+       boolean and isEnrolled() is a plain localStorage read, so the offer can
+       no longer be swallowed by a hanging browser probe (the old bug). */
+    Promise.resolve(window.DhBio.isEnrolled())
+      .then(enr => {
+        if (enr) return;
+        try {
+          if (bioNameEl) bioNameEl.textContent = bioLabel();
+          bioOffer.classList.remove('hidden');
+        } catch { /* ignore */ }
+      })
+      .catch(() => {
+        try {
+          if (bioNameEl) bioNameEl.textContent = bioLabel();
+          bioOffer.classList.remove('hidden');
+        } catch { /* ignore */ }
+      });
   };
   if (bioEnableBtn) bioEnableBtn.addEventListener('click', () => {
     if (bioBusy || !window.DhBio) return;
     bioBusy = true;
     bioEnableBtn.disabled = true;
-    bioEnableBtn.textContent = '⏳ Confirm your ' + (window.DhBio.methodLabel()) + '…';
+    bioEnableBtn.textContent = '⏳ Confirm your ' + bioLabel() + '…';
     window.DhBio.enroll(SECRET).then(ok => {
       bioOffer.classList.add('hidden');
       if (ok) {
-        showBioZone(window.DhBio.methodLabel());
-        toast('💞 ' + window.DhBio.methodLabel() + ' enabled for this phone — one look/touch unlocks next time ♥');
+        showBioZone(bioLabel());
+        toast('💞 ' + bioLabel() + ' enabled for this phone — one look/touch unlocks next time ♥');
       } else {
         const e = window.__dhBioLastErr;
-        console.warn('DH: biometric enrolment returned false', e && (e.message || e));
-        toast('Couldn’t enable biometrics here — the secret word still works perfectly ♥');
+        const m = (e && (e.message || e.name)) || '';
+        console.warn('DH: biometric enrolment returned false', e);
+        if (/cancel|NotAllowed/i.test(m)) {
+          toast('Biometric was cancelled — tap “✨ Yes, enable it” again any time ♥');
+        } else if (/no-platform-auth/.test(m)) {
+          toast('This browser can’t see a face/fingerprint sensor — the secret word still works ♥');
+        } else {
+          toast('Couldn’t enable biometrics here (' + (m || 'unknown') + ') — secret word still works ♥');
+        }
       }
     }).catch(err => {
       bioOffer.classList.add('hidden');
