@@ -71,6 +71,48 @@
                                               for restoreDays() only. */
   const dayNumber = id => { const m = /^day(\d+)$/.exec(id); return m ? +m[1] : null; };
 
+  /* v4.27 DH — universal day toolbar: EVERY day page gets the FULL tool row —
+     📌 Day finished select, ▾ Collapse/Expand, 🗑 Clear this day and the red
+     ✖ Delete day button. Older builds persisted day HTML that lacked some of
+     these buttons (the delete control was added after many days were already
+     saved), so those pages restored WITHOUT it while freshly created days had
+     it — which is exactly why "Delete day" only appeared on some days. This
+     function re-injects any missing control into the .day-finished bar of every
+     page at boot, after each cloud restore, and before every persistDays()
+     snapshot — so the button becomes visible on ALL days immediately and the
+     repaired markup syncs to both phones automatically. */
+  const ensureDayTools = root => {
+    $$('.page', root).forEach(page => {
+      if (!dayNumber(page.id)) return;
+      const bar = $('.day-finished', page);
+      if (!bar) return;
+      const N = dayNumber(page.id);
+      /* keep the anchor order stable: select → collapse → clear → delete → link */
+      const link = $('.lb-day-link', bar);
+      const mk = (html, sel) => {
+        const t = document.createElement('template');
+        t.innerHTML = html.trim();
+        const el = t.content.firstElementChild;
+        if (link) bar.insertBefore(el, link); else bar.appendChild(el);
+        void sel;
+        return el;
+      };
+      if (!$('.day-finished-select', bar)) {
+        mk(`<select class="day-finished-select" id="df-day${N}" data-day="day${N}">` +
+           `<option value="no">❌ No</option><option value="yes">✅ Yes</option></select>`);
+      }
+      if (!$('.collapse-toggle', bar)) {
+        mk(`<button class="collapse-toggle" type="button" aria-expanded="true" title="Collapse / expand this day">▾ Collapse</button>`);
+      }
+      if (!$('.clear-day-btn', bar)) {
+        mk(`<button class="clear-day-btn" type="button" data-day="day${N}">🗑 Clear this day</button>`);
+      }
+      if (!$('.delete-day-btn', bar)) {
+        mk(`<button class="delete-day-btn danger" type="button" data-day="day${N}" title="Permanently remove Day ${N} from the contract and the cloud">✖ Delete day</button>`);
+      }
+    });
+  };
+
   /* v4.13f DH — localStorage HARDENING: privacy mode / opaque-origin / some
      webviews THROW SecurityError from EVERY localStorage access (not just on
      parse). safeGet/safeSet never throw → no save/load path can be killed by
@@ -429,8 +471,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.25 DH';
+  const APP_VERSION = 'v4.27 DH';
   const WHATS_NEW = [
+    '🗑 v4.27: “✖ DELETE DAY” NOW SHOWS ON EVERY SINGLE DAY. Days saved by older builds carried toolbar HTML without the delete button, so after a cloud restore only some days showed it. The app now repairs every day toolbar automatically — each day gets its full row (📌 Day finished · ▾ Collapse/Expand · 🗑 Clear this day · ✖ Delete day) on load, after every sync, and before every save — and pushes the repaired markup back to the cloud so BOTH phones show it everywhere ♥',
     '🔐 v4.25: FACE / FINGERPRINT — THE largeBlob ERROR, CLOSED FROM EVERY SIDE. The “read parameter is only valid when requesting an assertion” message came from your phone’s PASSKEY MANAGER auto-injecting the large-blob feature into our setup request. Since v4.23 our own options carry no extensions and v4.24 pinned the domain — this update closes the last door: enabling now explicitly declares “no extensions wanted” and lists our own credential as an exclusion, so iOS/Android treat the lock as a plain on-device credential their passkey sync must leave alone. Fresh storage keys mean every half-broken old enrolment is discarded automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm Face ID/fingerprint — done ♥',
     '📱 v4.22: PERFECT APP LOOK — EVERYTHING INSIDE THE MAIN BOX. The page now scrolls ONLY up & down, never left/right: any element wider than its box (old cached tables, long words, oversized images) is automatically contained or scrolls inside its own rounded box instead of pushing the screen wide. All boxes re-measure to the CURRENT screen type on load, rotation and resize so text always fits inside. And the Effective Date pill is back EXACTLY as before — one compact DD/MM/YYYY capsule with its own little fixed-size day/month/year slots, never stretched by the auto-growing fields.',
     '🔐 v4.23: THE “Couldn’t enable biometrics (largeBlob read parameter)” ERROR IS FIXED — that exact message came from Chrome/Samsung Internet rejecting our passkey registration because it asked the phone to store a “large blob” inside the Face-ID credential (an extension those browsers forbid at setup time). The whole large-blob mechanism is now REMOVED: enabling face/fingerprint sends plain, universally-supported passkey options, so the phone’s Face ID / fingerprint sheet opens immediately on the first tap. Your contract secret stays sealed in an encrypted device-only envelope released only after a passed biometric ceremony — same security, zero browser complaints. Old enrolments refresh automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm your face/finger — done.',
@@ -1141,6 +1184,12 @@
        snapshot) before it can be re-attached. This is what makes a deletion
        permanent across reloads, re-logins and both phones. */
     if (list) list = pruneDeleted(list);
+    /* v4.27 DH — repair day toolbars BEFORE any timestamp comparison: pages that
+       were saved by older builds without the ✖ Delete day / ▾ Collapse controls
+       get them re-injected now, and their dhUpdated stamp is bumped so the fresh
+       cloud copies below replace the stale saved HTML instead of keeping it. */
+    ensureDayTools(document);
+    $$('.page').forEach(p => { if (dayNumber(p.id)) p.dataset.dhUpdated = String(Date.now()); });
     /* v4.26 DH — merge saved collapse choices into the in-memory override map so
        a manual ▸ Expand on a FINISHED day survives reloads (the data-collapsed
        attribute alone can't express "expanded", and the day-locked default would
@@ -1203,7 +1252,7 @@
         });
       }
     }
-    if (!list || !list.length) { updateEmptyState(); ensureDhkStamps(); return; }
+    if (!list || !list.length) { ensureDayTools(document); updateEmptyState(); ensureDhkStamps(); return; }
     /* v4.14 DH — the "no hardcoded days" guarantee: when a cloud/local list IS
        present it is the ONLY source of day pages, so the empty banner must be
        removed (it can linger from an earlier empty restore). */
@@ -1296,6 +1345,15 @@
       setCreatedBadge($('#' + d.id), createdAtFor(d.id) || scraped);
     });
     loadSaved();                                       // replay field values into restored days
+    /* v4.27 DH — second repair pass AFTER the cloud copies were attached/swapped:
+       freshly inserted pages may come from OLD saved HTML without the delete
+       button, so re-inject missing tools everywhere and push the repaired markup
+       to the cloud once (guarded against re-entrant restore calls). */
+    ensureDayTools(document);
+    if (!restoreDays._toolsPushed) {
+      restoreDays._toolsPushed = true;
+      try { if (typeof persistDays === 'function') persistDays(); } catch { /* ignore */ }
+    }
     syncAllLocks();
   };
 
@@ -2738,6 +2796,9 @@
        travels inside outerHTML → saved days restore collapsed/expanded exactly
        as chosen even on devices with a stale cached styles.css. */
     try { $$('.page').forEach(p => ensureCollapseStyle(p)); } catch { /* ignore */ }
+    /* v4.27 DH — repair any missing day tools (✖ Delete day etc.) BEFORE the
+       outerHTML snapshot so the fixed toolbar is what gets saved & synced. */
+    try { ensureDayTools(document); } catch { /* ignore */ }
     /* v4.13 DH — stamp every field with its permanent identity token BEFORE the
        outerHTML snapshot is taken, so the stamps ride along inside the saved/copied
        day markup. The other phone restores the SAME tokens → the same sentence lands
@@ -2811,6 +2872,9 @@
     try { window.dhLogbookRefreshDom && window.dhLogbookRefreshDom(); } catch { /* ignore */ }
     const clearBtn = $('.clear-day-btn', page);
     if (clearBtn) clearBtn.addEventListener('click', () => clearDay(clearBtn));
+    /* v4.27 DH — guarantee the full tool row on this page too (older saved HTML
+       may lack the delete/collapse buttons even when passed to wireNewDay). */
+    try { ensureDayTools(page.parentNode || document); } catch { /* ignore */ }
     /* v4.26 DH — the "Day finished" select needs NO per-page listener any more:
        one delegated 'change' listener (see DAY LOCK section) handles every day,
        applies the lock AND collapses/expands the page automatically. */
