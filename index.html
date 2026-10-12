@@ -24,7 +24,6 @@
 <script src="js/supabase-config.js" defer></script>
 <script src="js/cloud.js?v=47" defer></script>
 <script src="js/logbook.js?v=16" defer></script>
-<script src="js/bio.js?v=7" defer></script>
 </head>
 <body>
 
@@ -72,21 +71,7 @@ document.addEventListener('click', function (e) {
     <p class="hint">Hint: pet name @ date &amp; month we met @</p>
     <button class="btn btn-primary login-btn" id="login-btn" type="button">Unlock our contract ♥</button>
 
-    <!-- v4.16 DH — biometric unlock: face / fingerprint, whatever this phone supports -->
-    <div class="bio-zone hidden" id="bio-zone">
-      <div class="bio-divider"><span>or</span></div>
-      <button class="btn btn-bio" id="bio-unlock-btn" type="button">🔓 Unlock with Face / Fingerprint</button>
-    </div>
-
     <p class="login-error" id="login-error" role="alert"></p>
-
-    <!-- v4.16 DH — after a successful password unlock, offer to save face/fingerprint for next time -->
-    <div class="bio-offer hidden" id="bio-offer">
-      <p class="bio-offer-text">💞 Want to open our contract with your <strong id="bio-method-name">Face ID</strong> next time?</p>
-      <div class="bio-offer-btns">
-        <button class="btn btn-primary btn-sm" id="bio-enable-btn" type="button">✨ Yes, enable it</button>
-        <button class="btn btn-ghost btn-sm" id="bio-skip-btn" type="button">Maybe later</button>
-      </div>
     </div>
   </div>
 </div>
