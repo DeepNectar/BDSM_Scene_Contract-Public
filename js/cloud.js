@@ -70,7 +70,12 @@
          • global fetch wrapper: every Supabase request that hangs longer than
            7 s is aborted and retried once immediately — a slow/unreachable
            endpoint can no longer keep the app stuck on "Connecting…". */
-      const FETCH_TIMEOUT_MS = 7000;
+      /* v4.29 DH — timeout raised 7s → 15s. Live probe of this project
+         (qbnxcfwwsuqfmearyris) showed healthy responses taking 8–17 s
+         (cold/remote region). A 7 s cap aborted every normal request,
+         the retry then also timed out, and the pill fell to "Cloud
+         offline" even though Supabase was answering fine with HTTP 200. */
+      const FETCH_TIMEOUT_MS = 15000;
       const timedFetch = (url, opts = {}) => {
         const doOnce = () => {
           const ctrl = new AbortController();
@@ -117,8 +122,15 @@
 
   const warn = () => {
     warned = true;   // re-warn allowed after a failure; cheap to reset on success
-    setStatus('☁️ Cloud offline — check Supabase project status & keys',
-              'Supabase unreachable (wrong URL/key, paused free project, or no network); entries exist in this session only.');
+    /* v4.29 DH — honest diagnostics: distinguish "keys not configured"
+       (no client built at all) from a genuine network failure, and show the
+       real reason + timestamp in the tooltip so it can be verified at a glance. */
+    const why = !sb
+      ? 'js/supabase-config.js has no valid url/anonKey — Supabase client was never created.'
+      : 'Last request failed at ' + new Date().toLocaleTimeString() +
+        ' — check internet connection / Supabase project status (free projects pause when idle).';
+    setStatus(sb ? '☁️ Cloud offline — retrying automatically…'
+                  : '☁️ Cloud offline — check Supabase project status & keys', why);
   };
 
   /* v4.17 DH — ONE-TIME TOMBSTONE RESET (self-heal for the "created days /
