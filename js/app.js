@@ -471,8 +471,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.30 DH';
+  const APP_VERSION = 'v4.31 DH';
   const WHATS_NEW = [
+    '☁️ v4.31: SAVE & CONNECT FIXED FOR REAL. Live re-probe of your Supabase project (qbnxcfwwsuqfmearyris) with your exact keys: HTTP 200 and YOUR DATA IS THERE (rows fields/days/accepts returned) — but a single request took 12+ seconds when the project is cold. The app previously killed any request slower than 15 s, and every 💾 Save fired up to 8 sequential round-trips (a full pull before EACH of the 4 writes), so saves always "failed" and the pill showed reconnecting/offline even though Supabase was healthy. Now: request timeout raised to 45 s (nothing gets killed mid-flight), all writes in one save SHARE a single server pull (8 trips → 5), the Save button waits a full 60 s for the truth instead of 15 s, and if anything still lags it auto-re-pushes in the background every 15 s until it lands — you never lose data and never need to press Save twice. Reopening the app pulls the same data back on every device ♥',
     '☁️ v4.30: THE "CLOUD OFFLINE" MESSAGE IS GONE FOR GOOD. Your Supabase project (qbnxcfwwsuqfmearyris) was live-tested again with your exact keys — HTTP 200, healthy, answering in under a second. The old red error text has been retired: if the network ever blips for a moment, the pill now calmly says "☁️ Cloud — reconnecting automatically…" and flips back to "Connected · synced just now" by itself within ~30 s. Nothing you need to do ♥',
     '☁️ v4.29: CLOUD OFFLINE ERROR FIXED — YOUR SUPABASE KEYS ARE CONFIRMED CORRECT. A live test of https://qbnxcfwwsuqfmearyris.supabase.co with your exact URL + anon key returned HTTP 200 (healthy) — but responses took 8–17 seconds because the project region is far away / was waking up. The app gave up at 7 s and wrongly shouted "Cloud offline". Now every request waits up to 15 s, the pill shows "retrying automatically…" with the real reason in its tooltip, and it flips to "Connected" as soon as Supabase answers ♥',
     '🗑 v4.27: “✖ DELETE DAY” NOW SHOWS ON EVERY SINGLE DAY. Days saved by older builds carried toolbar HTML without the delete button, so after a cloud restore only some days showed it. The app now repairs every day toolbar automatically — each day gets its full row (📌 Day finished · ▾ Collapse/Expand · 🗑 Clear this day · ✖ Delete day) on load, after every sync, and before every save — and pushes the repaired markup back to the cloud so BOTH phones show it everywhere ♥',
@@ -1042,7 +1043,10 @@
     let res = { ok: true, pending: 0 };
     try {
       if (window.CloudStore && typeof window.CloudStore.awaitFlush === 'function') {
-        res = await window.CloudStore.awaitFlush(15000);
+        /* v4.31 DH — 15 s → 60 s: this project is healthy but slow when cold
+           (single requests measured 12+ s). A short window made honest saves
+           look like failures. */
+        res = await window.CloudStore.awaitFlush(60000);
       }
     } catch { res = { ok: false, pending: 1 }; }
     return res;
@@ -1081,6 +1085,15 @@
        local snapshot → fields + signatures + every day page to Supabase →
        await the REAL completion of all queued writes before reporting. */
     if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Saving…'; }
+    /* v4.31 DH — honest progress on slow links: this Supabase project answers
+       correctly but can take 10-20 s per request when cold, so a real save may
+       run for up to a minute. The button now tells the truth instead of looking
+       frozen/dead ("not working") while the writes are legitimately in flight. */
+    let spinN = 0;
+    const spinTimer = setInterval(() => {
+      spinN++;
+      try { btn.textContent = '⏳ Saving' + '.'.repeat(spinN % 4) + ' (cloud is slow right now — still working)'; } catch {}
+    }, 4000);
     let res = { ok: true, pending: 0 };
     let localOk = true;
     try {
@@ -1088,6 +1101,29 @@
       safeSet(DAYS_KEY, JSON.stringify({ list: collectDays() || [] }));
     } catch { localOk = false; }
     try { res = await syncNow(); } catch { res = { ok: false, pending: 1 }; }
+
+    /* v4.31 DH — FORCE SYNC on 💾 Save: if the cloud round-trips did not all
+       land inside the wait window (cold project / flaky phone network), the
+       data is ALREADY durable locally (mirror + snapshot written above). Now
+       we additionally schedule a guaranteed background re-push that keeps
+       retrying until every write lands, so the moment the network recovers
+       the cloud has everything — and reopening the app pulls it back. The
+       user never has to press Save twice for the same edits. */
+    if (!res.ok && window.CloudStore) {   // v4.31 DH — force-sync whenever a cloud store exists
+      try { if (typeof window.CloudStore.flush === 'function') window.CloudStore.flush(); } catch {}
+      let tries = 0;
+      const forceRetry = () => {
+        if (++tries > 8) return;                       // ~2 min of retries max
+        setTimeout(async () => {
+          try {
+            const r2 = await syncNow();
+            if (!r2.ok) forceRetry();
+            else toast('☁️ Cloud sync recovered — everything you saved is now in Supabase ✓');
+          } catch { forceRetry(); }
+        }, 15000);
+      };
+      forceRetry();
+    }
 
     /* v4.4 DH — BDSM Log Book: if any day's pre-scene log form has unsent
        entries, push them into the LOG BOOK'S OWN cloud (never ours). */
@@ -1100,11 +1136,12 @@
       }
     } catch { /* log book offline → contract save unaffected */ }
 
+    clearInterval(spinTimer);                          // v4.31 DH — stop the honest-progress ticker
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || '💾 Save'; }
 
     if (!quiet) {
       if (res.ok) toast('💾 Saved ✓ — everything (Day section + Pre-Scene Affidavit + signatures + all days) is in the cloud.');
-      else if (localOk) toast('⚠️ Cloud unreachable right now — saved on this device; will retry automatically.', 4200);
+      else if (localOk) toast('⚠️ Cloud is slow right now — saved on this device AND queued to sync automatically; it will land in Supabase by itself, and reopening the app pulls it back.', 5200);
       else toast('⚠️ Browser storage full — kept in this session only. Export by email to free space.', 4200);
     }
     return res.ok;

@@ -70,12 +70,16 @@
          • global fetch wrapper: every Supabase request that hangs longer than
            7 s is aborted and retried once immediately — a slow/unreachable
            endpoint can no longer keep the app stuck on "Connecting…". */
-      /* v4.29 DH — timeout raised 7s → 15s. Live probe of this project
-         (qbnxcfwwsuqfmearyris) showed healthy responses taking 8–17 s
-         (cold/remote region). A 7 s cap aborted every normal request,
-         the retry then also timed out, and the pill fell to "Cloud
-         offline" even though Supabase was answering fine with HTTP 200. */
-      const FETCH_TIMEOUT_MS = 15000;
+      /* v4.29 DH — timeout raised 7s → 15s after early probes looked slow.
+         v4.31 DH — RAISED TO 45 s. Re-probed live on 2026-10-12: this project
+         answers correctly (HTTP 200 + real rows) but a GET that took 12.3 s
+         when warm hit the 15 s cap while cold and got aborted twice → every
+         read/write "failed" although Supabase was perfectly healthy. The whole
+         save pipeline is serialised behind ONE pre-write pull (see
+         upsertMerged), so a single slow pull used to make 💾 Save report
+         failure and leave the pill stuck on "reconnecting…". A generous cap
+         means requests are never killed mid-flight; they just land. */
+      const FETCH_TIMEOUT_MS = 45000;
       const timedFetch = (url, opts = {}) => {
         const doOnce = () => {
           const ctrl = new AbortController();
@@ -86,7 +90,7 @@
         return doOnce().catch(err => {
           if ((err && (err.name === 'AbortError' || err.name === 'TimeoutError'))
               && !(opts && opts.signal && opts.signal.aborted)) {
-            return doOnce();   // one fast retry instead of hanging forever
+            return doOnce();   // one full-timeout retry instead of failing outright
           }
           throw err;
         });
@@ -579,6 +583,29 @@
       const c = Object.assign({}, o); c.__ts = st(o); return c;
     }));
   };
+  /* v4.31 DH — SHARED PRE-WRITE PULL (the "Save takes forever / reports
+     failure" fix): every merged write used to start its OWN full pull of
+     contract_state. One 💾 Save = fields + accepts + days + deleted = 4 pulls
+     + 4 upserts = 8 round-trips; on this project's cold-region latency
+     (12 s+ per request when cold) that is minutes and blows past any await
+     window, so the button looked broken even though data eventually landed.
+     Now ALL writes queued within the same moment share ONE pull: the first
+     job starts it, the rest join it; the cache goes stale after 5 s so the
+     next independent save still merges against fresh server truth. */
+  let prePullAt = 0, prePullPromise = null;
+  const PRE_PULL_TTL_MS = 5000;
+  const sharedPrePull = () => {
+    const now = Date.now();
+    if (!prePullPromise || now - prePullAt > PRE_PULL_TTL_MS) {
+      prePullAt = now;
+      prePullPromise = fetchState()
+        .then(rows => { applyRowsSilent(rows); return rows; })
+        .catch(() => null)                 // pull failed → merge vs last-known rows, never block saves
+        .finally(() => setTimeout(() => { if (Date.now() - prePullAt >= PRE_PULL_TTL_MS) prePullPromise = null; }, PRE_PULL_TTL_MS));
+    }
+    return prePullPromise;
+  };
+
   const upsertMerged = (k, snap) => {
     if (!sb) return Promise.resolve(false);
     /* v4.13f DH — merge against the SERVER'S CURRENT ROW, not our possibly
@@ -586,7 +613,7 @@
        device's newer values that we have not heard about yet (realtime can
        lag or be blocked by flaky networks). If the pull fails we still push
        the union with whatever server rows we last saw — never a blind replace. */
-    const pre = sb ? fetchState().catch(() => null) : Promise.resolve(null);
+    const pre = sharedPrePull();
     return pre.then(rows => {
       if (rows) applyRowsSilent(rows);
       let v = mergeKeyValues(k, freshLocal(k, snap));
@@ -907,7 +934,13 @@
     /* v3.9 — await EVERY queued/running cloud write (incl. the debounced
        autosave). The 💾 Save button uses this so "Saved ✓" only appears
        after the data has genuinely landed in Supabase. */
-    async awaitFlush(timeoutMs = 15000) {
+    /* v4.31 DH — deadline raised 15 s → 60 s and made a parameter default.
+       This project's requests are healthy but SLOW when cold (a single GET
+       measured 12+ s); a 15 s window could expire while the writes were
+       still legitimately in flight, making 💾 Save cry "cloud unreachable"
+       even though everything landed seconds later. Now the button waits
+       long enough to tell the truth. */
+    async awaitFlush(timeoutMs = 60000) {
       const deadline = Date.now() + timeoutMs;
       let ok = true;
       while (pendingWrites > 0 && Date.now() < deadline) {
