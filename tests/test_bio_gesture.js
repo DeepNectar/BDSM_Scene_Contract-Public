@@ -63,14 +63,18 @@ function loadBio(ctx){ vm.runInContext(fs.readFileSync('js/bio.js','utf8'), vm.c
     ok('credentials.get called SYNCHRONOUSLY inside unlock()', flags().getSyncSeen === true);
     ok('unlock still returns exact secret', (await pUnlock) === 'Deepnectar@1612@');
   }
-  // B) no gesture at all (auto-prompt after tab restore, script-driven click): refuse honestly
+  // B) v4.21 DH — the JS-side gesture pre-check is GONE on purpose: even with
+  //    no navigator.userActivation and no tap stamp, enroll() must STILL call
+  //    navigator.credentials.create synchronously (the browser itself decides;
+  //    the old 'no-gesture' refusal was silently killing the buttons on phones).
   {
     const { ctx, store, flags } = makeCtx({ activation: false });
     const B = loadBio(ctx);
-    let err=null; try { await B.enroll('x'); } catch(e){ err=e; }
-    ok('stale tap → rejects no-gesture (not silent)', err && err.message==='no-gesture');
-    ok('stale tap → credentials.create NEVER called', flags().createSyncSeen === false);
-    // recorded recent tap (app stamps on click) makes it work even w/o userActivation API
+    const pEnroll = B.enroll('x');
+    ok('no userActivation → credentials.create STILL called synchronously', flags().createSyncSeen === true);
+    const firstRes = await pEnroll.catch(()=>false);
+    ok('no userActivation → enrolment proceeds (guard removed)', firstRes === true);
+    // recorded recent tap (app stamps on click) also still works w/o userActivation API
     store['dhContract.bio.tap.v'] = String(Date.now());
     const okRes = await B.enroll('Deepnectar@1612@').catch(()=>false);
     ok('recent recorded tap → enrolment proceeds', okRes === true);

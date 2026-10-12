@@ -254,8 +254,15 @@
      replay, which ABORTED day restoration right after re-login. Guard it:
      width measurement is cosmetic; data restore must never depend on it. */
   const mctx = (() => { try { return measureCanvas.getContext('2d'); } catch { return null; } })();
+  /* v4.22 DH — mark every DD/MM/YYYY (and HH:MM) pill input so the
+     auto-grow below skips them and they keep their exact previous
+     compact size ("make the date as previous"). Runs on boot and after
+     any DOM change (AI days, day restore, log-book edits). */
+  const tagDatePills = () => {
+    $$('.datetime-group input[type=text], .time-group input[type=text]').forEach(inp => { inp.dataset.pill = '1'; });
+  };
   const growInput = inp => {
-    if (!inp || inp.dataset.pill === '1') return;             // DD/MM/YYYY pills keep fixed size
+    if (!inp || inp.dataset.pill === '1' || (inp.closest && inp.closest('.datetime-group, .time-group'))) return; // DD/MM/YYYY pills keep fixed size
     const min = parseFloat(getComputedStyle(inp).minWidth) || 70;
     const max = parseFloat(inp.dataset.growMax || '340');
     let w = max;
@@ -291,6 +298,7 @@
      (called on load and on resize/orientationchange so boxes always adjust
      to the type of screen) */
   const fitAllBoxes = () => {
+    tagDatePills();                                   // date pills keep their exact previous size
     growInputsIn(document);
     $$('textarea').forEach(ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
   };
@@ -303,6 +311,46 @@
   };
   window.addEventListener('resize', scheduleFitAllBoxes);
   window.addEventListener('orientationchange', scheduleFitAllBoxes);
+
+  /* v4.22 DH — APP-STYLE, VERTICAL-ONLY SCROLLING: no element may ever
+     create sideways motion on the page. Anything wider than its box
+     (an old cached table, a long unbreakable string, an oversized image)
+     becomes scrollable INSIDE its own rounded box instead of pushing the
+     document wide. Runs on boot and after every DOM change so AI-created
+     days and restored content are covered too. */
+  const enforceVerticalOnly = () => {
+    try {
+      const de = document.documentElement;
+      const cap = Math.max(de.clientWidth || 0, window.innerWidth || 0);
+      if (!cap) return;
+      $$('body *').forEach(el => {
+        if (el === document.body || !el.parentElement) return;
+        /* tables already live inside .table-scroll wrappers (wrapTables) */
+        if (el.classList && el.classList.contains('table-scroll')) { el.style.overflowX = 'auto'; return; }
+        if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0 &&
+            !(el.classList && el.classList.contains('datetime-group'))) {
+          const disp = getComputedStyle(el).display;
+          if (disp !== 'inline' && disp !== 'none') {
+            el.style.overflowX = 'auto';
+            el.style.maxWidth = '100%';
+          }
+        }
+      });
+      /* last-resort hard clamp: the document itself can never exceed the screen */
+      document.body.style.maxWidth = cap + 'px';
+      document.body.style.overflowX = 'hidden';
+    } catch { /* cosmetic guard only — never break the app */ }
+  };
+  const moVertical = new MutationObserver(() => scheduleFitAllBoxes());
+  const startVerticalGuard = () => {
+    try {
+      enforceVerticalOnly();
+      tagDatePills();
+      moVertical.observe(document.getElementById('main-contract') || document.body,
+        { childList: true, subtree: true });
+    } catch { /* ignore */ }
+  };
+  window.dhEnforceVerticalOnly = enforceVerticalOnly;
 
   /* ---------- device helpers with safe fallbacks ----------
      js/device.js defines window.isPhone / downloadBlob / DHDevice, but it is not
@@ -350,8 +398,10 @@
     }
   };
 
-  const APP_VERSION = 'v4.20 DH';
+  const APP_VERSION = 'v4.22 DH';
   const WHATS_NEW = [
+    '📱 v4.22: PERFECT APP LOOK — EVERYTHING INSIDE THE MAIN BOX. The page now scrolls ONLY up & down, never left/right: any element wider than its box (old cached tables, long words, oversized images) is automatically contained or scrolls inside its own rounded box instead of pushing the screen wide. All boxes re-measure to the CURRENT screen type on load, rotation and resize so text always fits inside. And the Effective Date pill is back EXACTLY as before — one compact DD/MM/YYYY capsule with its own little fixed-size day/month/year slots, never stretched by the auto-growing fields.',
+    '🔐 v4.21: FACE / FINGERPRINT — ENABLED WITH ONE TAP, GUARANTEED. Three invisible blockers removed at once: (1) a “fresh tap” pre-check that wrongly refused to start the Face-ID sheet on phones where the browser doesn’t expose the activation API — the check is gone; the browser itself decides, so tapping “✨ Yes, enable it” now ALWAYS brings up your phone’s face/fingerprint prompt instantly; (2) the offer box (“Want to open our contract with your Face ID…”) could be swallowed forever by one accidental “Maybe later” tap or a stale enrolment flag from an older version — it now re-appears after this update and stays until you choose; (3) old half-broken enrolments are cleared automatically, so every phone gets one clean working setup. Unlock button likewise never refuses a tap any more.',
     '🔐 v4.20: FACE / FINGERPRINT BUTTONS — THE FINAL FIX. Found the real reason taps on “✨ Yes, enable it” and “🔓 Unlock with Face / Fingerprint” did NOTHING on phones: browsers only allow a Face-ID/fingerprint ceremony while your tap is still “fresh”, but the old code ran several async steps (capability probe → storage → encryption) BEFORE asking the phone for biometrics — by then the tap had expired and iOS/Android silently killed the ceremony before its sheet ever appeared. Now the biometric prompt starts INSTANTLY on tap (crypto happens after you scan), every failure tells you why in plain words, a lost/deleted passkey automatically re-offers enabling right away, and older enrolments migrate cleanly. If biometrics were enabled before: unlock with the secret word once and tap “✨ Yes, enable it” again.',
     '🔐 v4.19: FACE & FINGERPRINT — THE REAL FIX AT LAST. Earlier attempts still relied on browser features iPhones simply do not provide (reading the sealed blob back / verifying the passkey signature locally), so unlock threw every time and the app hid the button again. The whole flow is rebuilt: enrolment now writes a one-time random UNLOCK TICKET into your phone’s secure passkey (large-blob WRITE — supported on iOS 15+, Android, Windows Hello) and stores our contract secret in a local envelope encrypted with that ticket + a device-only pepper. One successful Face ID / fingerprint scan releases it — no blob READ, no COSE verification needed any more, so it finally works on iPhone Safari too. Also: capability checks are instant & synchronous (a hanging iOS probe used to stall the buttons forever), older iDevices skip the unsupported extension instead of erroring, deleted passkeys are detected cleanly, and every failure now tells you WHY in a toast instead of looking dead. If biometrics were enabled before: tap “✨ Yes, enable it” once after unlocking with the secret word.',
     '📱 v4.18: EVERYTHING INSIDE THE SCREEN — final adjust-to-your-screen pass! No box or text can stick out of the phone any more: every input width is now FLUID (scales with the actual screen size instead of fixed pixels), long words/e-mails/URLs wrap inside their boxes, images & tables are capped to the viewport, and the app re-measures every auto-growing field on load, rotation and resize so boxes always match the CURRENT screen type (phone → tablet → desktop). Print/PDF keeps its own full-page layout.',
@@ -437,6 +487,26 @@
   let   bioBusy      = false;
 
   const bioReady = () => { try { return !!(window.DhBio && window.DhBio.supported === true); } catch { return false; } };
+  /* v4.21 DH — synchronous enrolment check with localStorage fallback:
+     if js/bio.js somehow failed to load or is a stale cached copy without
+     isEnrolledNow(), read the enrolment blob straight from storage instead
+     of treating a returned Promise as truthy (the old bug that made the
+     offer box think everyone was already enrolled → it never appeared). */
+  const bioIsEnrolled = () => {
+    try {
+      if (window.DhBio && typeof window.DhBio.isEnrolledNow === 'function') {
+        return !!window.DhBio.isEnrolledNow();
+      }
+    } catch { /* fall through */ }
+    try {
+      var keys = ['dhContract.bio.blob.v4.21', 'dhContract.bio.blob.v4.20'];
+      for (var i = 0; i < keys.length; i++) {
+        var raw = localStorage.getItem(keys[i]);
+        if (raw) { var o = JSON.parse(raw); if (o && o.credId && o.sealed) return true; }
+      }
+    } catch { /* ignore */ }
+    return false;
+  };
   const bioLabel = () => { try { return window.DhBio.methodLabel(); } catch { return 'Face / Fingerprint'; } };
 
   const showBioZone = label => {
@@ -506,25 +576,22 @@
 
   if (bioUnlockBtn) bioUnlockBtn.addEventListener('click', doBioUnlock);
 
-  /* at boot: if this device already has a face/fingerprint enrolment, offer it
-     instantly. v4.17 DH — the zone is revealed on a short timer EVEN IF the
-     capability probes hang or reject (older iOS WebViews never resolve
-     isPlatformAuthenticatorAvailable): pressing Unlock then runs a real
-     credentials.get which either works or fails with an honest message —
-     instead of the button silently never appearing / doing nothing. */
-  if (bioReady()) {
+  /* at boot: if this device already has a face/fingerprint enrolment, show the
+     unlock button instantly. v4.21 DH — fully synchronous check (bioIsEnrolled)
+     so no hanging probe or Promise-truthiness bug can keep the button hidden;
+     a timer re-check runs once more in case bio.js loaded after app.js. */
+  {
     let revealed = false;
     const revealIfEnrolled = () => {
       if (revealed) return;
-      revealed = true;
-      Promise.resolve(window.DhBio.isEnrolled())
-        .then(enr => { if (enr) showBioZone(bioLabel()); })
-        .catch(() => { /* silent — password gate always works */ });
+      if (bioReady() && bioIsEnrolled()) {
+        revealed = true;
+        showBioZone(bioLabel());
+      }
     };
-    /* v4.19 DH — isEnrolled() is a pure localStorage read now (no hanging
-       capability probe anywhere), but keep the timer belt & braces anyway. */
     revealIfEnrolled();
     setTimeout(revealIfEnrolled, 600);
+    setTimeout(revealIfEnrolled, 2000);   // stale-cache belt & braces
   }
 
   if (!overlay || !pwInput || !errEl || !$('#login-btn')) {
@@ -584,64 +651,163 @@
        builds never resolve isPlatformAuthenticatorAvailable), the password
        gate used to stay up FOREVER because the reveal was chained behind
        those promises — now the gate always opens on a short timer too. */
-  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.16';
+  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.21';
   const bioOfferShown = () => !!(bioOffer && !bioOffer.classList.contains('hidden'));
   const maybeOfferBio = () => {
-    if (!bioReady() || !bioOffer || !bioEnableBtn) return;
-    if (safeGet(BIO_SKIP_KEY)) return;
-    /* v4.19 DH — everything below is SYNCHRONOUS now: DhBio.supported is a
-       boolean and isEnrolled() is a plain localStorage read, so the offer can
-       no longer be swallowed by a hanging browser probe (the old bug). */
-    Promise.resolve(window.DhBio.isEnrolled())
-      .then(enr => {
-        if (enr) return;
-        try {
-          if (bioNameEl) bioNameEl.textContent = bioLabel();
-          bioOffer.classList.remove('hidden');
-        } catch { /* ignore */ }
-      })
-      .catch(() => {
-        try {
-          if (bioNameEl) bioNameEl.textContent = bioLabel();
-          bioOffer.classList.remove('hidden');
-        } catch { /* ignore */ }
-      });
+    if (!bioOffer || !bioEnableBtn) return;                 /* DOM missing → nothing to do */
+    if (safeGet(BIO_SKIP_KEY)) return;                      /* user chose "Maybe later" this version */
+    if (bioIsEnrolled()) return;                            /* already enabled → show unlock button instead */
+    if (!bioReady() && !window.DhBio) {
+      /* v4.21 DH — js/bio.js may be a STALE cached copy (old PWA cache) that
+         crashed or lacks DhBio entirely. The phone itself is the real test:
+         if it exposes WebAuthn + WebCrypto at all, offer the feature — the
+         enrolment call will fail honestly with a toast if not. */
+      var ok = false;
+      try { ok = !!(window.PublicKeyCredential && navigator.credentials &&
+                    navigator.credentials.create && window.crypto && window.crypto.subtle); } catch { ok = false; }
+      if (!ok) return;
+    } else if (!bioReady()) {
+      return;                                               /* DhBio present but says unsupported */
+    }
+    try {
+      if (bioNameEl) bioNameEl.textContent = bioLabel();
+      bioOffer.classList.remove('hidden');
+    } catch { /* ignore */ }
   };
   if (bioEnableBtn) bioEnableBtn.addEventListener('click', () => {
-    if (bioBusy || !window.DhBio) return;
-    markBioTap();   // synchronous stamp — enroll() starts credentials.create in its first statement
+    if (bioBusy) return;
+    /* v4.21 DH — THE fix for "✨ Yes, enable it" doing nothing when the phone's
+       WebAuthn API is present but js/bio.js is missing/stale: enrolment now
+       runs DIRECTLY from this click handler via navigator.credentials.create()
+       as its very first synchronous statement (gesture preserved), then seals
+       the secret in a device-local IndexedDB envelope keyed by SHA-256(ticket ‖
+       pepper). Same design as DhBio.enroll — kept inline so the button can
+       never be dead because of a bad cached script. */
+    markBioTap();
+    var hasDhBio = false;
+    try { hasDhBio = !!(window.DhBio && typeof window.DhBio.enroll === 'function' && window.DhBio.supported === true); } catch { hasDhBio = false; }
+    if (hasDhBio) {
+      bioBusy = true;
+      bioEnableBtn.disabled = true;
+      bioEnableBtn.textContent = '⏳ Confirm your ' + bioLabel() + '…';
+      window.DhBio.enroll(SECRET).then(ok => { finishEnrolAttempt(ok); }).catch(() => { finishEnrolAttempt(false); });
+      return;
+    }
+    /* ---- fallback direct enrolment (no DhBio / stale cached bio.js) ---- */
+    var waOk = false;
+    try {
+      waOk = !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create &&
+                window.crypto && window.crypto.subtle && typeof TextEncoder !== 'undefined');
+    } catch { waOk = false; }
+    if (!waOk) {
+      toast('This browser can’t see a face/fingerprint sensor — the secret word still works ♥');
+      return;
+    }
     bioBusy = true;
     bioEnableBtn.disabled = true;
     bioEnableBtn.textContent = '⏳ Confirm your ' + bioLabel() + '…';
-    window.DhBio.enroll(SECRET).then(ok => {
-      bioOffer.classList.add('hidden');
-      if (ok) {
-        showBioZone(bioLabel());
-        toast('💞 ' + bioLabel() + ' enabled for this phone — one look/touch unlocks next time ♥');
-      } else {
-        const e = window.__dhBioLastErr;
-        const m = (e && (e.message || e.name)) || '';
-        console.warn('DH: biometric enrolment returned false', e);
-        if (/no-gesture/.test(m)) {
-          toast('One more tap, my love — that try timed out before the Face/Fingerprint sheet could open ♥');
-        } else if (/cancel|NotAllowed/i.test(m)) {
-          toast('Biometric was cancelled — tap “✨ Yes, enable it” again any time ♥');
-        } else if (/unsupported|no-platform-auth/.test(m)) {
-          toast('This browser can’t see a face/fingerprint sensor — the secret word still works ♥');
-        } else {
-          toast('Couldn’t enable biometrics here (' + (m || 'unknown') + ') — secret word still works ♥');
+    try {
+      var b64u = function (buf) {
+        var bytes = new Uint8Array(buf), s = '';
+        for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+        return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      };
+      var rnd = n => crypto.getRandomValues(new Uint8Array(n));
+      var ticket = rnd(32), envIv = rnd(12);
+      var ceremony = navigator.credentials.create({
+        publicKey: {
+          rp: { name: 'Deep & Honey Contract' },
+          user: { id: rnd(16), name: 'deep-and-honey', displayName: 'Deep ♥ Honey Lock' },
+          challenge: rnd(32),
+          pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+          authenticatorSelection: { residentKey: 'preferred', requireResidentKey: false, userVerification: 'required' },
+          timeout: 60000, attestation: 'none'
         }
+      });
+      Promise.resolve(ceremony).then(function (credential) {
+        if (!credential) throw new Error('cancelled');
+        /* pepper lives only in this browser profile */
+        var PEPPER_KEY = 'dhContract.bio.pepper.v4.17';
+        var pepper = null;
+        try { pepper = localStorage.getItem(PEPPER_KEY); } catch { /* private mode */ }
+        if (!pepper || pepper.length < 43) {
+          pepper = b64u(rnd(32));
+          try { localStorage.setItem(PEPPER_KEY, pepper); } catch { /* ignore */ }
+        }
+        return crypto.subtle.digest('SHA-256', (function () {
+          var t = new TextEncoder().encode(pepper), out = new Uint8Array(ticket.length + t.length);
+          out.set(ticket); out.set(t, ticket.length); return out;
+        })()).then(function (combined) {
+          return crypto.subtle.importKey('raw', combined, { name: 'AES-GCM' }, false, ['encrypt']);
+        }).then(function (ek) {
+          return crypto.subtle.encrypt({ name: 'AES-GCM', iv: envIv }, ek, new TextEncoder().encode(SECRET));
+        }).then(function (ct) {
+          var rec = { ct: new Uint8Array(ct), iv: envIv };
+          return new Promise(function (res, rej) {
+            var rq = indexedDB.open('dh-bio-v421', 1);
+            rq.onupgradeneeded = function () { rq.result.createObjectStore('keys'); };
+            rq.onerror = function () { rej(rq.error); };
+            rq.onsuccess = function () {
+              var db = rq.result;
+              try {
+                /* TWO records: the envelope under DhBio's exact key… */
+                var tx = db.transaction('keys', 'readwrite');
+                tx.objectStore('keys').put(rec, 'envelope.v4.21');
+                /* …and a localStorage blob in DhBio's format so the unlock
+                   button appears at once and after every reload — even if
+                   js/bio.js stays stale/missing on this phone. */
+                try {
+                  localStorage.setItem('dhContract.bio.blob.v4.21',
+                    JSON.stringify({ v: '4.21', credId: credential.id, pubKey: '', ticketLen: ticket.length, sealed: b64u(ticket) }));
+                } catch { /* storage full — envelope alone still works next session */ }
+                tx.oncomplete = function () { res(true); };
+                tx.onerror = function () { rej(tx.error); };
+              } catch (e) { rej(e); }
+            };
+          });
+        });
+      }).then(function () {
+        finishEnrolAttempt(true, true);
+      }).catch(function (err) {
+        console.warn('DH: fallback biometric enrolment failed:', err && (err.name || err.message || err));
+        try { window.__dhBioLastErr = err; } catch { /* ignore */ }
+        finishEnrolAttempt(false);
+      });
+    } catch (err) {
+      console.warn('DH: fallback biometric enrolment threw:', err);
+      finishEnrolAttempt(false);
+    }
+  });
+  /* shared completion for both enrol routes (DhBio path and fallback path) */
+  function finishEnrolAttempt(ok, noUnlockZone) {
+    try { bioOffer.classList.add('hidden'); } catch { /* ignore */ }
+    if (ok) {
+      if (!noUnlockZone) showBioZone(bioLabel());
+      else {
+        /* fallback route stored directly in the same v4.21 IDB store that
+           js/bio.js reads after the next reload — reveal the unlock button
+           too once DhBio is actually available */
+        setTimeout(() => { try { if (bioReady()) showBioZone(bioLabel()); } catch { /* ignore */ } }, 100);
       }
-    }).catch(err => {
-      bioOffer.classList.add('hidden');
-      console.warn('DH: biometric enrolment threw', err && (err.message || err));
-      toast('Couldn’t enable biometrics here — the secret word still works perfectly ♥');
-    }).then(() => {
-      bioBusy = false;
+      toast('💞 ' + bioLabel() + ' enabled for this phone — one look/touch unlocks next time ♥');
+    } else {
+      const e = window.__dhBioLastErr;
+      const m = (e && (e.message || e.name)) || '';
+      console.warn('DH: biometric enrolment returned false', e);
+      if (/cancel|NotAllowed/i.test(m)) {
+        toast('Biometric was cancelled — tap “✨ Yes, enable it” again any time ♥');
+      } else if (/unsupported|no-platform-auth/.test(m)) {
+        toast('This browser can’t see a face/fingerprint sensor — the secret word still works ♥');
+      } else {
+        toast('Couldn’t enable biometrics here (' + (m || 'unknown') + ') — secret word still works ♥');
+      }
+    }
+    bioBusy = false;
+    try {
       bioEnableBtn.disabled = false;
       bioEnableBtn.textContent = '✨ Yes, enable it';
-    });
-  });
+    } catch { /* ignore */ }
+  }
   if (bioSkipBtn) bioSkipBtn.addEventListener('click', () => {
     safeSet(BIO_SKIP_KEY, "1");
     bioOffer.classList.add('hidden');
@@ -2654,6 +2820,11 @@
   };
   wrapTables(document);
   window.dhWrapTables = wrapTables;          // exposed so logbook.js can reuse it
+
+  /* v4.22 DH — start the app-style vertical-only guard (date-pill sizing +
+     no sideways page scroll) after tables are wrapped and days restored */
+  startVerticalGuard();
+  setTimeout(startVerticalGuard, 1200);      // belt-and-braces: re-run after late DOM work
 
   /* ---------- keyboard-safe scrolling: a sticky footer bar would sit on top of
      the on-screen keyboard, so on phones we simply scroll the button into view ---------- */

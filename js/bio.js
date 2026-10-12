@@ -56,34 +56,26 @@
    ============================================================ */
 'use strict';
 (function () {
-  var VERSION = '4.20';
+  var VERSION = '4.21';
   var VKEY = 'dhContract.bio.v';
   var BLOB = 'dhContract.bio.blob.v' + VERSION;
-  var STALE_KEYS = ['dhContract.bio.blob.v1', 'dhContract.bio.blob.v4.16', 'dhContract.bio.blob.v4.17', 'dhContract.bio.blob.v4.19'];   // older incompatible formats
-  var IDB_NAME = 'dh-bio-v420', IDB_STORE = 'keys';      // fresh store: old-version envelopes are unreadable by design
+  var STALE_KEYS = ['dhContract.bio.blob.v1', 'dhContract.bio.blob.v4.16', 'dhContract.bio.blob.v4.17', 'dhContract.bio.blob.v4.19', 'dhContract.bio.blob.v4.20'];   // older incompatible formats
+  var IDB_NAME = 'dh-bio-v421', IDB_STORE = 'keys';      // fresh store: old-version envelopes are unreadable by design
 
-  /* ---------- user gesture (v4.20 DH — THE real "button does nothing" fix) ----------
-     WebAuthn credentials.create()/get() REQUIRE a live user activation. If the
-     call is made after an await boundary (async capability probe, IndexedDB
-     round-trip…) the browser silently kills it with NotAllowedError before any
-     Face-ID sheet ever appears — which is exactly how "✨ Yes, enable it" and
-     "🔓 Unlock with Face / Fingerprint" looked dead on real phones.
-     So BOTH public entry points now start navigator.credentials SYNCHRONOUSLY
-     inside the click handler, and all crypto/envelope work happens AFTER the
-     ceremony resolves. */
-  function freshGesture() {
-    try {
-      if (typeof navigator.userActivation !== 'undefined' && navigator.userActivation) {
-        return !!navigator.userActivation.hasBeenActive;
-      }
-    } catch (e) { /* fall through to timing heuristic */ }
-    /* Older browsers: no userActivation API — accept calls within 5 s of the
-       last recorded tap (we stamp one in app.js on every bio button press). */
-    try {
-      var t = parseInt(localStorage.getItem('dhContract.bio.tap.v') || '0', 10);
-      return t > 0 && (Date.now() - t) < 5000;
-    } catch (e) { return true; }   /* can't read storage → don't block, let WebAuthn decide */
-  }
+  /* ---------- user gesture (v4.21 DH — guard DELETED on purpose) ----------
+     v4.20 added a "fresh tap" pre-check that rejected enroll()/unlock() with
+     'no-gesture' when navigator.userActivation was missing or the timestamp
+     stamp was stale. On real phones that heuristic misfired constantly:
+     iOS Safari exposes navigator.userActivation as undefined in some builds,
+     PWAs launched from the home screen lose localStorage writes momentarily,
+     and the auto-prompt path has NO tap at all — so tapping
+     "✨ Yes, enable it" / "🔓 Unlock with Face / Fingerprint" did NOTHING
+     (the promise rejected before navigator.credentials was ever called).
+     The browser itself ALREADY enforces user activation for WebAuthn and
+     throws NotAllowedError honestly if it's missing — and both entry points
+     still call navigator.credentials.create/get SYNCHRONOUSLY as their first
+     statement, which is what actually preserves the gesture. A JS-side guess
+     on top of that could only ever break things, so it is gone forever. */
 
   /* ---------- environment ---------- */
   function cryptoOk() {
@@ -192,6 +184,14 @@
   function migrate() {
     if (lsGet(VKEY) === VERSION) return;
     STALE_KEYS.forEach(lsDel);
+    /* v4.21 DH — also wipe the "Maybe later" dismissal flag that lives in
+       app.js's namespace. Users kept reporting the offer box never showed;
+       one accidental tap on "Maybe later" used to hide it forever with no
+       way back. On every version migration the offer is re-armed, and since
+       enrolments are reset by migrations anyway, the user genuinely needs
+       to see the offer again after each update. */
+    lsDel('dhContract.bio.skip.v4.16');
+    lsDel('dhContract.bio.skip.v4.21');
     lsSet(VKEY, VERSION);
   }
   function getBlob() {
@@ -389,7 +389,7 @@
      All encryption happens AFTER the ceremony resolves; the ticket is
      returned to us via clientDataJSON.typeInfo.extension.largeBlob.write
      (or our local mirror as a last resort). */
-  var ENVELOPE_KEY = 'envelope.v4.20';
+  var ENVELOPE_KEY = 'envelope.v4.21';
   function extractWrittenTicket(credential) {
     /* Best-effort read of the bytes the authenticator accepted for our
        largeBlob.write request, out of the attestation's clientDataJSON. */
@@ -404,7 +404,9 @@
   function enroll(secret) {
     migrate();
     if (!cryptoOk() || !webauthnAvailable()) return Promise.reject(new Error('unsupported'));
-    if (!freshGesture()) return Promise.reject(new Error('no-gesture'));
+    /* v4.21 DH — no JS-side gesture pre-check anymore (it was the bug; see top).
+       If the browser decides there is no live user activation it throws
+       NotAllowedError from credentials.create() itself, which callers show. */
     var secretStr = String(secret);
     var ticket = randBytes(32);
     var envIv  = randBytes(IV_LEN);
@@ -455,7 +457,10 @@
     migrate();
     var blob = getBlob();
     if (!blob || !cryptoOk() || !webauthnAvailable()) return Promise.reject(new Error('not-enrolled'));
-    if (!freshGesture()) return Promise.reject(new Error('no-gesture'));
+    /* v4.21 DH — no JS-side gesture pre-check (see enroll above); the
+       auto-prompt path at boot has no tap at all and must still be allowed
+       to TRY credentials.get — the browser honestly rejects it if there is
+       no activation, and the UI then just waits for a real tap. */
     var want = b64uDecode(blob.sealed);             // our ticket bytes
     /* ⚠ synchronous first statement — preserves the user gesture */
     var ceremony = navigator.credentials.get(requestOptions(blob.credId));
@@ -510,6 +515,12 @@
        The real capability check happens inside enroll()/unlock(), which fail
        honestly with a reason the UI can show. */
     supported: webauthnAvailable() && cryptoOk(),
+    /* v4.21 DH — synchronous enrolment check. app.js used to call
+       isEnrolled() (which returns a Promise) inside `if (...)` guards —
+       a Promise object is ALWAYS truthy, so the offer box was skipped as
+       "already enrolled" even on phones that had never enrolled anything.
+       That is why "✨ Yes, enable it" never appeared for many users. */
+    isEnrolledNow: function () { return !!getBlob(); },
     isEnrolled: isEnrolled,
     enroll: enroll,
     unlock: unlock,
