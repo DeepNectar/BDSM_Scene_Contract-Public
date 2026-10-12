@@ -2114,6 +2114,11 @@
 
   /* ---------- add a brand-new BLANK day (manual creation) ---------- */
   const addBlankDay = () => {
+    /* v4.31 DH — seed Day 1 first (same rule as the AI "Create day" path):
+       a brand-new contract ships with ZERO day pages, so nextDayNumber()
+       would otherwise hand out #1 to a blank/AI-created day and the founding
+       Day 1 could never be created again without an id collision. */
+    if (!dayPages().length) { ensureStaticDay1(); }
     const N = nextDayNumber();
     /* v4.8 DH — if this exact day id was deleted before (tombstoned), the user
        is deliberately creating a NEW day with that number → lift the tombstone
@@ -2612,11 +2617,23 @@
     const duration = $('#ai-duration').value.trim() || 'Seventy-five (75) minutes of active scene play, plus generous aftercare';
     const notes    = $('#ai-notes').value.trim();
     const target   = aiDaySel.value;
-    const n        = dayNumber(target.startsWith('new:') ? target.slice(4) : target) || 99;
+    /* v4.31 DH — BUGFIX: in 'create' mode the day number MUST be the next free
+       number (same rule as addBlankDay/nextDayNumber), never the stale value of
+       the day-select. With zero days present the select offered "new:day1", so
+       "✨ Create day" produced a duplicate Day 1 instead of Day 2 and broke the
+       whole flow. The select is built BEFORE the generate click, so recompute
+       here; 'mode' is stamped so aiApplyClick stays correct even if the user
+       flips the mode chip between generating and applying. */
+    const n        = aiMode === 'create'
+      ? nextDayNumber()
+      : (dayNumber(target.startsWith('new:') ? target.slice(4) : target) || 99);
     const dateStr  = 'to be filled in ✍️';
     const protocol = seqs.map(k => SEQ_LIB[k].name).join(' → ');
     const C = COUPON_LIB[couple] || COUPON_LIB.romantic;
-    return { n, seqs, duration, notes, target, dateStr, protocol,
+    /* v4.31 DH — stamp the mode + fresh target id at GENERATE time so applying
+       a draft is deterministic (see buildPlan comment above). */
+    return { n, mode: aiMode, target: aiMode === 'create' ? `day${n}` : target,
+             seqs, duration, notes, dateStr, protocol,
              couple, mood, intensity, lead, venue, care, specialSub, specialDom, extraLimits,
              preamble: C.preamble, opening: C.opening, protocolFlavour: C.protocolFlavour,
              coupleLabel: C.label, intensityRule: INTENSITY_RULES[intensity] || INTENSITY_RULES.medium };
@@ -2951,16 +2968,24 @@
 
   function aiApplyClick() {
     if (!aiDraft) return;
+    /* v4.31 DH — branch on the mode STAMPED at generate time (aiMode may have
+       been flipped by a chip click while the draft sat unapplied). */
+    const applyMode = aiDraft.mode || aiMode;
     console.log('DH-DEBUG: create branch, addDayPage=', typeof addDayPage, 'typeof window.addDayPage=', typeof window.addDayPage);
-    if (aiMode === 'create') {
+    if (applyMode === 'create') {
       const created = `✨ Day ${aiDraft.n} created by the AI — review it together before signing ♥`;
       console.log('DH-DEBUG: calling addDayPage, n=', aiDraft.n, 'blank=', aiDraft.blank);
+      /* v4.31 DH — same tombstone lift as addBlankDay(): if this exact day id
+         was deleted earlier (first-stamp-wins registry), the user is creating a
+         NEW day with that number → lift the stamp so it can persist/restore. */
+      liftDeleted('day' + aiDraft.n);
       const section = addDayPage(aiDraft);
       console.log('DH-DEBUG: addDayPage returned', section && section.id, 'inDOM=', !!(section && window.document.contains(section)));
       persistDays();
       aiDraft = null;
       aiApplyBtn.disabled = true;
       closeAi();
+      refreshAiDayOptions();               // v4.31 DH — keep the AI target list in sync after creating a day
       save();
       try { section.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {}
       toast(created, 3400);
