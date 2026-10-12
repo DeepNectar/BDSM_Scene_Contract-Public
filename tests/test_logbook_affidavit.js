@@ -40,7 +40,7 @@ w.fetch = async (url, opts) => {
     }
     return { ok: true, json: async () => Object.keys(lbRows).map(k => ({ sheet_name: k, html_content: lbRows[k], updated_at: new Date().toISOString() })) };
   }
-  if (u.includes('qbnxcfwwsuqfmearyris')) contractStateTouched = true;
+  if (u.includes('nmxowqizxsujhmfnfdto')) contractStateTouched = true;
   return { ok: true, json: async () => [] };
 };
 /* keep any env storage; the module reads its own key */

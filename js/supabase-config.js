@@ -1,5 +1,5 @@
 /* ============================================================
-   Supabase configuration — v1.9 DH
+   Supabase configuration — v2.0 DH (new project nmxowqizxsujhmfnfdto)
    ------------------------------------------------------------
    1. Create a project at https://supabase.com
    2. Project settings → API → copy the two values below.
@@ -19,6 +19,6 @@
    the policy or add an auth anon key of your own.
    ============================================================ */
 window.SUPABASE_CONFIG = {
-  url: 'https://qbnxcfwwsuqfmearyris.supabase.co',
-  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFibnhjZnd3c3VxZm1lYXJ5cmlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MzI0NDEsImV4cCI6MjEwNzAwODQ0MX0.dP_Ip49NkOMxqn-lE15cOlR6EwJw4yB5dFLJYxBumPE',
+  url: 'https://nmxowqizxsujhmfnfdto.supabase.co',
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5teG93cWl6eHN1amhtZm5mZHRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE4MDA5MTUsImV4cCI6MjEwNzM3NjkxNX0.zSeiyz8P1lpENnpClzkDiznyeLRvCGhyJxRwqEPVm08',
 };
