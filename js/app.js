@@ -1231,7 +1231,13 @@
          with NO hardcoded days any more, the cloud list is the SOLE source of
          truth. If a page already sits in the DOM whose stamp is OLDER than the
          inbound list, the DOM copy predates the newest save → replace it with
-         the fresh cloud copy instead of leaving stale content on screen. */
+         the fresh cloud copy instead of leaving stale content on screen.
+         v4.31 DH — AND when BOTH copies carry no timestamps at all (rows
+         written by older builds), the freshly pulled CLOUD copy wins over an
+         untouched local page: that is what makes saved data & details come
+         back verbatim on reopen/re-login ("not saving any data" complaint).
+         A page the user actually edited locally gets a real Date.now() stamp,
+         so genuinely newer local work stays protected from the swap. */
       if (list && list.length) {
         const byId = new Map(list.map(d => [d && d.id, d]));
         domPages.forEach(p => {
@@ -1239,7 +1245,7 @@
           if (!src || !src.html) return;
           const cloudTs = +(src.updatedAt || src.createdAt || 0);
           const domTs   = +(p.dataset.dhUpdated || 0);
-          if (cloudTs && domTs && cloudTs > domTs) {
+          if ((cloudTs && domTs && cloudTs > domTs) || (!cloudTs && !domTs)) {
             try {
               const tplU = document.createElement('template');
               tplU.innerHTML = String(src.html).trim();
@@ -1933,6 +1939,39 @@
       return;
     }
     if (!confirm(`Clear ALL entries for ${dayId.toUpperCase()}? This cannot be undone.`)) return;
+    /* v4.31 DH — THE "CLOUD NOT SAVING ANY DATA / SAVE DOESN'T SYNC" FIX:
+       clearing the DOM alone was NOT enough — the saved values lived on under
+       the stable data-dhk keys in localStorage AND in the cloud 'fields' row,
+       so the very next loadSaved()/restore replayed every "cleared" value back
+       into the fields. The screen looked wiped, 💾 Save then pushed that same
+       old copy up again, and on reopen all the data "came back" — exactly the
+       "not saving any details" complaint. Now the stored per-day values are
+       deleted from BOTH stores BEFORE save() re-collects the (genuinely empty)
+       DOM, so Save force-syncs the true cleared state and reopening shows the
+       day EMPTY with all its details really gone. */
+    let storeChanged = false;
+    try {
+      const raw = JSON.parse(safeGet(STORE_KEY));
+      if (raw && typeof raw === 'object') {
+        Object.keys(raw).forEach(k => {
+          if (k.startsWith(dayId + '~') || k.startsWith(dayId + '#') || k.startsWith(dayId + '>')) { delete raw[k]; storeChanged = true; }
+        });
+        if (storeChanged) safeSet(STORE_KEY, JSON.stringify(raw));
+      }
+    } catch { /* storage unavailable — cloud prune below still applies */ }
+    try {
+      if (window.CloudStore && typeof window.CloudStore.fields === 'function') {
+        const cf = window.CloudStore.fields();
+        let cloudChanged = false;
+        Object.keys(cf).forEach(k => {
+          if (k.startsWith(dayId + '~') || k.startsWith(dayId + '#') || k.startsWith(dayId + '>')) { delete cf[k]; cloudChanged = true; }
+        });
+        if (cloudChanged) {
+          const p = window.CloudStore.saveFields(cf);
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        }
+      }
+    } catch { /* offline — local prune above + next save still deliver it */ }
     $$('input:not([type="password"]), textarea, select', page).forEach(el => {
       const slot = el.closest('.initials-slot');
       if (slot?.classList.contains('slot-filled')) return;   // keep sealed signatures intact
@@ -1942,7 +1981,7 @@
     });
     $$('textarea', page).forEach(ta => { ta.style.height = ''; });
     save();
-    toast(`🗑 ${dayId.toUpperCase()} cleared.`);
+    toast(`🗑 ${dayId.toUpperCase()} cleared — everywhere, cloud included ♥`);
   };
   $$('.clear-day-btn').forEach(btn => btn.addEventListener('click', () => clearDay(btn)));
 
