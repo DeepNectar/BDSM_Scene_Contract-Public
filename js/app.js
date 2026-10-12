@@ -217,7 +217,24 @@
      helpers used to live hundreds of lines below as `const`s → TDZ crash
      "Cannot access 'autoGrowAll' before initialization". Hoisted here so no
      call site can ever run before initialisation. */
-  const autoGrow = ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+  /* v4.18 DH — auto-growing text fields: every textarea is width-bounded to
+     its container (never sticks out of the screen) and its height re-measured
+     after the clamp, so a field grown on a wide screen shrinks correctly when
+     the phone rotates or a smaller screen loads. */
+  const autoGrow = ta => {
+    if (!ta || ta.tagName !== 'TEXTAREA') return;
+    try {
+      const p = ta.parentElement;
+      if (p) {
+        const cs   = getComputedStyle(p);
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const padR = parseFloat(cs.paddingRight) || 0;
+        const avail = p.clientWidth - padL - padR - ta.offsetLeft;
+        if (avail > 20) ta.style.maxWidth = Math.floor(avail) + 'px';
+      }
+    } catch { /* cosmetic bound only */ }
+    ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
+  };
   const autoGrowAll = () => $$('textarea').forEach(autoGrow);
   let growQueued = false;
   const scheduleAutoGrowAll = () => {
@@ -248,9 +265,44 @@
         w = Math.ceil(mctx.measureText(inp.value || inp.placeholder || '').width) + 26;
       } catch { /* measurement unavailable — fall through with a safe width */ }
     }
+    /* v4.18 DH — hard viewport bound: a grown input can NEVER stick out of
+       the screen. The cap is derived from the element's real position inside
+       its container, so on any phone width (down to 320 px) every box stays
+       fully visible "inside only". */
+    try {
+      if (inp.offsetParent && inp.parentElement) {
+        const cs   = getComputedStyle(inp.parentElement);
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const padR = parseFloat(cs.paddingRight) || 0;
+        const avail = inp.parentElement.clientWidth - padL - padR - inp.offsetLeft - 6;
+        if (avail > 0) max = Math.min(max, avail);
+      }
+      const vw = Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0);
+      if (vw) {
+        const r = inp.getBoundingClientRect();
+        const room = vw - r.left - 12;               // distance from the box to the right screen edge
+        if (room > 40) max = Math.min(max, room);
+      }
+    } catch { /* measurement is cosmetic — fall back to the CSS bounds */ }
     inp.style.width = Math.min(Math.max(w, min), max) + 'px';
   };
   const growInputsIn = root => $$('input[type="text"]', root).forEach(growInput);
+  /* refit every text field + auto-growing textarea to the CURRENT screen size
+     (called on load and on resize/orientationchange so boxes always adjust
+     to the type of screen) */
+  const fitAllBoxes = () => {
+    growInputsIn(document);
+    $$('textarea').forEach(ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
+  };
+  window.dhFitAllBoxes = fitAllBoxes;
+  let fitQueued = false;
+  const scheduleFitAllBoxes = () => {
+    if (fitQueued) return;
+    fitQueued = true;
+    requestAnimationFrame(() => { fitQueued = false; fitAllBoxes(); });
+  };
+  window.addEventListener('resize', scheduleFitAllBoxes);
+  window.addEventListener('orientationchange', scheduleFitAllBoxes);
 
   /* ---------- device helpers with safe fallbacks ----------
      js/device.js defines window.isPhone / downloadBlob / DHDevice, but it is not
@@ -298,8 +350,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.17 DH';
+  const APP_VERSION = 'v4.18 DH';
   const WHATS_NEW = [
+    '📱 v4.18: EVERYTHING INSIDE THE SCREEN — final adjust-to-your-screen pass! No box or text can stick out of the phone any more: every input width is now FLUID (scales with the actual screen size instead of fixed pixels), long words/e-mails/URLs wrap inside their boxes, images & tables are capped to the viewport, and the app re-measures every auto-growing field on load, rotation and resize so boxes always match the CURRENT screen type (phone → tablet → desktop). Print/PDF keeps its own full-page layout.',
     '🔐 v4.17: FACE & FINGERPRINT UNLOCK NOW REALLY WORKS — the “✨ Yes, enable it” and “🔓 Unlock with Face / Fingerprint” buttons were silently dying on iPhones (iOS Safari < 18) and several Android browsers: those engines never hand the credential’s sealed blob back after a successful Face-ID scan, so every unlock threw, the app deleted the enrolment and hid the button (“needs re-enabling”). Fixed end-to-end: enrolment now ALSO stores a device-bound local envelope (key material split between the passkey seal and a browser-profile-only pepper, both useless alone), the unlock flow has three honest fallback paths instead of one fragile one, the hard-pinned authenticatorAttachment that made some WebViews throw NotAllowedError outright is gone, failed attempts are logged to the console instead of vanishing, and UI reveals no longer hang behind capability probes that never resolve. Re-enable biometrics once from the offer after unlocking with the secret word.',
     '🔐 v4.16: FACE & FINGERPRINT UNLOCK — whatever your phone supports! After you unlock with our secret word once, the app offers “✨ Yes, enable it”: your phone then asks for Face ID / fingerprint (the device sensor decides — the app NEVER sees or stores any biometric data) and a device-bound passkey is created. From then on the login card shows “🔓 Unlock with Face / Fingerprint” and one look/touch opens the contract. Each phone enrols its own biometric (stored locally on that device only, never synced); if a biometric ever fails or is removed from the phone, the normal secret-word login still works exactly as before, and you can re-enable anytime.',
     '📱 v4.14: TOTAL PHONE COMPACT PASS — everything in the app now adjusts to the phone screen so ALL of it is visible properly: the header version/cloud pills and Log Book line stack neatly instead of colliding, the contract-meta line (contract no. / effective date / parties) becomes one tidy column with the date pill wrapping inside the screen, wide tables scroll sideways inside their own rounded box without clipping or pushing the page wide, every input box is bounded by the viewport (auto-growing fields never exceed the screen), debrief & do/don\'t boxes go single-column, AI chips shrink to fit whole rows, the login card is compact and fully visible above the keyboard, and the toast stays on-screen. Also fixed a service-worker syntax error that kept phones serving stale cached files.',
@@ -1416,6 +1469,14 @@
        otherwise the contract boots from an empty mirror and never syncs. */
     try { await window.CloudStore.ready; } catch { /* offline → boot local-only */ }
     restoreDays(); loadSaved(); applySignatures();
+    /* v4.18 DH — one tick after everything is in the DOM, refit every box to
+       THIS screen's width (fonts may still be loading → refit once more when
+       they finish). Guarantees all boxes/text sit inside the phone screen. */
+    requestAnimationFrame(() => { try { fitAllBoxes(); } catch { /* ignore */ } });
+    setTimeout(() => { try { fitAllBoxes(); } catch { /* ignore */ } }, 500);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => { try { scheduleFitAllBoxes(); } catch { /* ignore */ } }).catch(() => {});
+    }
   };
 
   /* v3.6 DH — keep multi-device sync fresh: whenever the tab regains focus /
