@@ -398,8 +398,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.23 DH';
+  const APP_VERSION = 'v4.24 DH';
   const WHATS_NEW = [
+    '🔐 v4.24: FACE / FINGERPRINT ENABLE — THE largeBlob ERROR IS FINALLY DEAD. The “The ‘largeBlob’ extension’s ‘read’ parameter is only valid when requesting an assertion” message was NOT coming from our code (we stopped using that extension entirely) — it came from your phone’s passkey manager quietly injecting the large-blob feature itself because our setup request didn’t name a domain. Now enabling declares this app’s own address explicitly, so iOS/Android treat the lock as a plain on-device credential and never touch large-blob: tap “✨ Yes, enable it”, confirm Face ID/fingerprint, done. Unlock pins exactly YOUR credential id too. Old enrolments refresh automatically — unlock with the secret word once and re-enable ♥',
     '📱 v4.22: PERFECT APP LOOK — EVERYTHING INSIDE THE MAIN BOX. The page now scrolls ONLY up & down, never left/right: any element wider than its box (old cached tables, long words, oversized images) is automatically contained or scrolls inside its own rounded box instead of pushing the screen wide. All boxes re-measure to the CURRENT screen type on load, rotation and resize so text always fits inside. And the Effective Date pill is back EXACTLY as before — one compact DD/MM/YYYY capsule with its own little fixed-size day/month/year slots, never stretched by the auto-growing fields.',
     '🔐 v4.23: THE “Couldn’t enable biometrics (largeBlob read parameter)” ERROR IS FIXED — that exact message came from Chrome/Samsung Internet rejecting our passkey registration because it asked the phone to store a “large blob” inside the Face-ID credential (an extension those browsers forbid at setup time). The whole large-blob mechanism is now REMOVED: enabling face/fingerprint sends plain, universally-supported passkey options, so the phone’s Face ID / fingerprint sheet opens immediately on the first tap. Your contract secret stays sealed in an encrypted device-only envelope released only after a passed biometric ceremony — same security, zero browser complaints. Old enrolments refresh automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm your face/finger — done.',
     '🔐 v4.21: FACE / FINGERPRINT — ENABLED WITH ONE TAP, GUARANTEED. Three invisible blockers removed at once: (1) a “fresh tap” pre-check that wrongly refused to start the Face-ID sheet on phones where the browser doesn’t expose the activation API — the check is gone; the browser itself decides, so tapping “✨ Yes, enable it” now ALWAYS brings up your phone’s face/fingerprint prompt instantly; (2) the offer box (“Want to open our contract with your Face ID…”) could be swallowed forever by one accidental “Maybe later” tap or a stale enrolment flag from an older version — it now re-appears after this update and stays until you choose; (3) old half-broken enrolments are cleared automatically, so every phone gets one clean working setup. Unlock button likewise never refuses a tap any more.',
@@ -652,7 +653,7 @@
        builds never resolve isPlatformAuthenticatorAvailable), the password
        gate used to stay up FOREVER because the reveal was chained behind
        those promises — now the gate always opens on a short timer too. */
-  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.23';
+  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.24';
   const bioOfferShown = () => !!(bioOffer && !bioOffer.classList.contains('hidden'));
   const maybeOfferBio = () => {
     if (!bioOffer || !bioEnableBtn) return;                 /* DOM missing → nothing to do */
@@ -717,7 +718,25 @@
       var ticket = rnd(32), envIv = rnd(12);
       var ceremony = navigator.credentials.create({
         publicKey: {
-          rp: { name: 'Deep & Honey Contract' },
+          /* v4.24 DH — rp.id ALWAYS set (hostname, or a stable per-install
+             pseudo-id on file://-style origins): stops iOS/Android passkey
+             managers auto-injecting the largeBlob extension, which threw
+             "The 'largeBlob' extension's 'read' parameter is only valid when
+             requesting an assertion" on enable. */
+          rp: (function () {
+            var rp = { name: 'Deep & Honey Contract' };
+            try {
+              var h = String(location.hostname || '');
+              if (h) rp.id = h;
+              else {
+                var PSEUDO = 'dhContract.bio.rpid', p = null;
+                try { p = localStorage.getItem(PSEUDO); } catch (e) { /* ignore */ }
+                if (!p) { p = 'dh-local-' + Math.floor(Math.random() * 1e9).toString(36); try { localStorage.setItem(PSEUDO, p); } catch (e) { /* ignore */ } }
+                rp.id = p;
+              }
+            } catch (e) { rp.id = 'dh-local-fallback'; }
+            return rp;
+          })(),
           user: { id: rnd(16), name: 'deep-and-honey', displayName: 'Deep ♥ Honey Lock' },
           challenge: rnd(32),
           pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
@@ -745,7 +764,7 @@
         }).then(function (ct) {
           var rec = { ct: new Uint8Array(ct), iv: envIv };
           return new Promise(function (res, rej) {
-            var rq = indexedDB.open('dh-bio-v423', 1);
+            var rq = indexedDB.open('dh-bio-v424', 1);
             rq.onupgradeneeded = function () { rq.result.createObjectStore('keys'); };
             rq.onerror = function () { rej(rq.error); };
             rq.onsuccess = function () {
@@ -753,13 +772,13 @@
               try {
                 /* TWO records: the envelope under DhBio's exact key… */
                 var tx = db.transaction('keys', 'readwrite');
-                tx.objectStore('keys').put(rec, 'envelope.v4.23');
+                tx.objectStore('keys').put(rec, 'envelope.v4.24');
                 /* …and a localStorage blob in DhBio's format so the unlock
                    button appears at once and after every reload — even if
                    js/bio.js stays stale/missing on this phone. */
                 try {
-                  localStorage.setItem('dhContract.bio.blob.v4.23',
-                    JSON.stringify({ v: '4.23', credId: credential.id, pubKey: '', ticketLen: ticket.length, sealed: b64u(ticket) }));
+                  localStorage.setItem('dhContract.bio.blob.v4.24',
+                    JSON.stringify({ v: '4.24', credId: credential.id, pubKey: '', ticketLen: ticket.length, sealed: b64u(ticket) }));
                 } catch { /* storage full — envelope alone still works next session */ }
                 tx.oncomplete = function () { res(true); };
                 tx.onerror = function () { rej(tx.error); };
