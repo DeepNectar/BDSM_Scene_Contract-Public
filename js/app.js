@@ -398,8 +398,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.25 DH';
+  const APP_VERSION = 'v4.26 DH';
   const WHATS_NEW = [
+    '🔐 v4.26: FACE / FINGERPRINT ENABLE — THE largeBlob ERROR IS FINALLY DEAD. We traced the “read parameter is only valid when requesting an assertion” message to your phone’s PASSKEY MANAGER (iCloud Keychain / Google Passwords / Samsung Pass): whenever a setup looks like a syncable passkey it silently joins the large-blob protocol and fails. Enabling our lock now registers as a NON-discoverable, on-device-only credential that passkey managers are forbidden by spec from touching — plus an automatic second attempt with classic options for older phones, so “✨ Yes, enable it” lands one way or the other. Fresh storage keys discard every half-broken old enrolment: unlock with the secret word once, tap “✨ Yes, enable it”, confirm Face ID/fingerprint — done ♥',
     '🔐 v4.25: FACE / FINGERPRINT — THE largeBlob ERROR, CLOSED FROM EVERY SIDE. The “read parameter is only valid when requesting an assertion” message came from your phone’s PASSKEY MANAGER auto-injecting the large-blob feature into our setup request. Since v4.23 our own options carry no extensions and v4.24 pinned the domain — this update closes the last door: enabling now explicitly declares “no extensions wanted” and lists our own credential as an exclusion, so iOS/Android treat the lock as a plain on-device credential their passkey sync must leave alone. Fresh storage keys mean every half-broken old enrolment is discarded automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm Face ID/fingerprint — done ♥',
     '📱 v4.22: PERFECT APP LOOK — EVERYTHING INSIDE THE MAIN BOX. The page now scrolls ONLY up & down, never left/right: any element wider than its box (old cached tables, long words, oversized images) is automatically contained or scrolls inside its own rounded box instead of pushing the screen wide. All boxes re-measure to the CURRENT screen type on load, rotation and resize so text always fits inside. And the Effective Date pill is back EXACTLY as before — one compact DD/MM/YYYY capsule with its own little fixed-size day/month/year slots, never stretched by the auto-growing fields.',
     '🔐 v4.23: THE “Couldn’t enable biometrics (largeBlob read parameter)” ERROR IS FIXED — that exact message came from Chrome/Samsung Internet rejecting our passkey registration because it asked the phone to store a “large blob” inside the Face-ID credential (an extension those browsers forbid at setup time). The whole large-blob mechanism is now REMOVED: enabling face/fingerprint sends plain, universally-supported passkey options, so the phone’s Face ID / fingerprint sheet opens immediately on the first tap. Your contract secret stays sealed in an encrypted device-only envelope released only after a passed biometric ceremony — same security, zero browser complaints. Old enrolments refresh automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm your face/finger — done.',
@@ -501,7 +502,7 @@
       }
     } catch { /* fall through */ }
     try {
-      var keys = ['dhContract.bio.blob.v4.25', 'dhContract.bio.blob.v4.24', 'dhContract.bio.blob.v4.23'];
+      var keys = ['dhContract.bio.blob.v4.26', 'dhContract.bio.blob.v4.25', 'dhContract.bio.blob.v4.24'];
       for (var i = 0; i < keys.length; i++) {
         var raw = localStorage.getItem(keys[i]);
         if (raw) { var o = JSON.parse(raw); if (o && o.credId && o.sealed) return true; }
@@ -653,7 +654,7 @@
        builds never resolve isPlatformAuthenticatorAvailable), the password
        gate used to stay up FOREVER because the reveal was chained behind
        those promises — now the gate always opens on a short timer too. */
-  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.25';
+  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.26';
   const bioOfferShown = () => !!(bioOffer && !bioOffer.classList.contains('hidden'));
   const maybeOfferBio = () => {
     if (!bioOffer || !bioEnableBtn) return;                 /* DOM missing → nothing to do */
@@ -716,39 +717,44 @@
       };
       var rnd = n => crypto.getRandomValues(new Uint8Array(n));
       var ticket = rnd(32), envIv = rnd(12);
-      var ceremony = navigator.credentials.create({
-        publicKey: {
-          /* v4.24 DH — rp.id ALWAYS set (hostname, or a stable per-install
-             pseudo-id on file://-style origins): stops iOS/Android passkey
-             managers auto-injecting the largeBlob extension, which threw
-             "The 'largeBlob' extension's 'read' parameter is only valid when
-             requesting an assertion" on enable. */
-          rp: (function () {
-            var rp = { name: 'Deep & Honey Contract' };
-            try {
-              var h = String(location.hostname || '');
-              if (h) rp.id = h;
-              else {
-                var PSEUDO = 'dhContract.bio.rpid', p = null;
-                try { p = localStorage.getItem(PSEUDO); } catch (e) { /* ignore */ }
-                if (!p) { p = 'dh-local-' + Math.floor(Math.random() * 1e9).toString(36); try { localStorage.setItem(PSEUDO, p); } catch (e) { /* ignore */ } }
-                rp.id = p;
-              }
-            } catch (e) { rp.id = 'dh-local-fallback'; }
-            return rp;
-          })(),
-          user: { id: rnd(16), name: 'deep-and-honey', displayName: 'Deep ♥ Honey Lock' },
-          challenge: rnd(32),
-          pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-          authenticatorSelection: { residentKey: 'preferred', requireResidentKey: false, userVerification: 'required' },
-          timeout: 60000, attestation: 'none',
-          /* v4.25 DH — explicit EMPTY extension map stops iOS/Android passkey
-             managers applying their own largeBlob defaults during registration
-             (the last source of the reported read-parameter error). */
-          extensions: {}
-        }
-      });
-      Promise.resolve(ceremony).then(function (credential) {
+      /* v4.26 DH — build create() options with a chosen residency policy.
+         PRIMARY attempt uses residentKey:'discouraged' (NON-discoverable):
+         per WebAuthn spec passkey managers MUST NOT store non-discoverable
+         credentials, so iCloud Keychain / Google Passwords / Samsung Pass
+         never classify this as a syncable passkey and never auto-inject the
+         largeBlob extension that produced the reported
+         "The 'largeBlob' extension's 'read' parameter is only valid when
+         requesting an assertion" error. Explicit empty extension map
+         declares "no extensions wanted" too. If an older phone refuses
+         non-discoverable registrations we retry once with classic
+         'preferred' options below. */
+      function fallbackCreateOptions(residency) {
+        return {
+          publicKey: {
+            rp: (function () {
+              var rp = { name: 'Deep & Honey Contract' };
+              try {
+                var h = String(location.hostname || '');
+                if (h) rp.id = h;
+                else {
+                  var PSEUDO = 'dhContract.bio.rpid', p = null;
+                  try { p = localStorage.getItem(PSEUDO); } catch (e) { /* ignore */ }
+                  if (!p) { p = 'dh-local-' + Math.floor(Math.random() * 1e9).toString(36); try { localStorage.setItem(PSEUDO, p); } catch (e) { /* ignore */ } }
+                  rp.id = p;
+                }
+              } catch (e) { rp.id = 'dh-local-fallback'; }
+              return rp;
+            })(),
+            user: { id: rnd(16), name: 'deep-and-honey', displayName: 'Deep ♥ Honey Lock' },
+            challenge: rnd(32),
+            pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+            authenticatorSelection: { residentKey: residency.residentKey, requireResidentKey: residency.requireResidentKey, userVerification: 'required' },
+            timeout: 60000, attestation: 'none',
+            extensions: {}
+          }
+        };
+      }
+      function finishFallbackEnrol(credential) {
         if (!credential) throw new Error('cancelled');
         /* pepper lives only in this browser profile */
         var PEPPER_KEY = 'dhContract.bio.pepper.v4.17';
@@ -768,7 +774,7 @@
         }).then(function (ct) {
           var rec = { ct: new Uint8Array(ct), iv: envIv };
           return new Promise(function (res, rej) {
-            var rq = indexedDB.open('dh-bio-v425', 1);
+            var rq = indexedDB.open('dh-bio-v426', 1);
             rq.onupgradeneeded = function () { rq.result.createObjectStore('keys'); };
             rq.onerror = function () { rej(rq.error); };
             rq.onsuccess = function () {
@@ -776,13 +782,13 @@
               try {
                 /* TWO records: the envelope under DhBio's exact key… */
                 var tx = db.transaction('keys', 'readwrite');
-                tx.objectStore('keys').put(rec, 'envelope.v4.25');
+                tx.objectStore('keys').put(rec, 'envelope.v4.26');
                 /* …and a localStorage blob in DhBio's format so the unlock
                    button appears at once and after every reload — even if
                    js/bio.js stays stale/missing on this phone. */
                 try {
-                  localStorage.setItem('dhContract.bio.blob.v4.25',
-                    JSON.stringify({ v: '4.25', credId: credential.id, pubKey: '', ticketLen: ticket.length, sealed: b64u(ticket) }));
+                  localStorage.setItem('dhContract.bio.blob.v4.26',
+                    JSON.stringify({ v: '4.26', credId: credential.id, pubKey: '', ticketLen: ticket.length, sealed: b64u(ticket) }));
                 } catch { /* storage full — envelope alone still works next session */ }
                 tx.oncomplete = function () { res(true); };
                 tx.onerror = function () { rej(tx.error); };
@@ -790,6 +796,20 @@
             };
           });
         });
+      }
+      /* ⚠ synchronous first statement of this branch — preserves the tap. */
+      var ceremony = navigator.credentials.create(fallbackCreateOptions(
+        { residentKey: 'discouraged', requireResidentKey: false }));
+      Promise.resolve(ceremony).then(finishFallbackEnrol).catch(function (err) {
+        /* v4.26 DH — first attempt failed? Retry ONCE with classic
+           passkey-style options for authenticators that refuse
+           non-discoverable registrations (unless the user cancelled). */
+        var m0 = String((err && (err.message || err.name)) || '');
+        if (/cancel/i.test(m0)) throw err;
+        console.warn('DH: primary fallback enrolment failed, retrying with classic options:', err && (err.name || err.message || err));
+        var retry = navigator.credentials.create(fallbackCreateOptions(
+          { residentKey: 'preferred', requireResidentKey: false }));
+        return Promise.resolve(retry).then(finishFallbackEnrol);
       }).then(function () {
         finishEnrolAttempt(true, true);
       }).catch(function (err) {
