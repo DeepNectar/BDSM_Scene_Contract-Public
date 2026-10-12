@@ -361,6 +361,26 @@ select{border:1px solid var(--line);border-radius:8px;padding:3px 7px;font-size:
 .toggle-eye:hover{opacity:1}
 .hint{font-size:12.5px;color:var(--ink-soft);font-style:italic;margin-bottom:16px}
 .login-btn{width:100%}
+
+/* ---------- v4.16 DH · biometric (Face / Fingerprint) unlock ---------- */
+.bio-zone{margin-top:12px}
+.bio-divider{display:flex;align-items:center;gap:10px;margin:0 0 10px;color:var(--ink-soft);font-size:12px;font-style:italic}
+.bio-divider::before,.bio-divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.btn-bio{
+  width:100%;background:#fff;border:1.5px solid var(--accent);color:var(--accent);
+  font-weight:600;border-radius:12px;padding:11px 12px;min-height:44px;cursor:pointer;
+  transition:background .2s,transform .1s;
+}
+.btn-bio:hover{background:rgba(163,112,92,.08)}
+.btn-bio:active{transform:scale(.98)}
+.btn-bio:disabled{opacity:.65;cursor:wait}
+.bio-offer{margin-top:14px;padding:12px;border:1px dashed var(--accent);border-radius:14px;background:rgba(163,112,92,.06)}
+.bio-offer-text{font-size:13.5px;margin:0 0 10px;color:var(--ink)}
+.bio-offer-text strong{color:var(--accent)}
+.bio-offer-btns{display:flex;gap:8px;flex-wrap:wrap}
+.bio-offer-btns .btn{flex:1 1 auto;min-width:120px}
+.btn-sm{padding:8px 12px;font-size:13.5px;min-height:40px;border-radius:10px}
+
 .login-error{min-height:20px;margin-top:10px;font-size:13px;color:var(--no)}
 .shake{animation:shake .4s}
 @keyframes shake{20%{transform:translateX(-7px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(3px)}}
@@ -639,6 +659,87 @@ html,body{min-height:100vh;min-height:100dvh}
   .sig-cards{flex-wrap:nowrap}
   .sig-card{width:auto;flex:0 1 150px;max-width:150px}
   .seal-title{margin-bottom:4px}
+}
+
+/* ============================================================
+   v4.14 DH — TOTAL PHONE COMPACT PASS
+   Everything left over from the earlier passes now adapts to the
+   phone screen too: the header meta pills stack neatly instead of
+   colliding, the contract-meta line becomes one tidy column, wide
+   tables scroll sideways inside their own rounded box (no clipping,
+   no page overflow), the summary table gets tight cells, and every
+   remaining fixed-size box (inline inputs, debrief grid, do/don't
+   cards, AI chips, login card) is bounded by the viewport so ALL
+   content stays visible on any phone width down to 320 px.
+   ============================================================ */
+@media (max-width:640px){
+  /* --- header meta: badge / cloud pill / log-book line stacked & centred --- */
+  .contract-header{padding:12px 0 14px;margin-bottom:14px}
+  .version-badge,.cloud-status{display:block;width:max-content;max-width:100%;margin:0 auto 6px;text-align:center}
+  .cloud-status{font-size:11px;padding:3px 10px;overflow-wrap:anywhere}
+  .logbook-status-line{font-size:12px;gap:6px;margin:4px auto 2px}
+  .lb-open-btn{font-size:12px;padding:4px 10px}
+  .header-logo{margin-bottom:8px}
+  .contract-header h1{margin-top:2px}
+  .tagline{margin-top:2px}
+  /* --- contract meta line: one compact column, date pill fits the screen --- */
+  .sub{flex-direction:column;align-items:center;gap:6px;margin-top:10px;font-size:12.5px;line-height:1.5}
+  .sub > span{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;justify-content:center;max-width:100%}
+  /* --- pages: tighter outer rhythm so more shows per screen --- */
+  .page{margin-bottom:14px}
+  .page-head{margin-bottom:10px;gap:8px}
+  .section-title{margin:16px 0 8px;font-size:14px;gap:8px}
+  .page h4{margin:12px 0 6px;font-size:14px}
+  .page p{font-size:13.5px;margin:4px 0}
+  .quote{font-size:14.5px;padding:5px 10px;margin:6px 0}
+  .bullets{margin-left:16px;font-size:13.5px}
+  /* --- tables: horizontally scrollable INSIDE a rounded box, tight cells --- */
+  .table-scroll{border:1px solid var(--line);background:#fffdf9}
+  .table-scroll table{min-width:460px;font-size:12.5px;border-radius:0}
+  th,td{padding:5px 7px}
+  td label.yn{margin-right:8px}
+  /* --- inline input boxes: always bounded by the screen, never overflow --- */
+  .inline-input{width:clamp(90px,34vw,150px)}
+  .inline-input.adj{width:clamp(120px,44vw,190px)}
+  .inline-input.sw{width:clamp(96px,36vw,120px)}
+  #main-contract input[type=text]:not([maxlength]){max-width:min(340px,calc(100vw - 96px))}
+  textarea.note-box{font-size:13.5px;padding:4px 8px}
+  /* --- debrief & do/don't boxes: single column, snug padding --- */
+  .debrief-grid{grid-template-columns:1fr;gap:6px 0}
+  .dos-donts{grid-template-columns:1fr;gap:8px;margin:8px 0}
+  .do-card,.dont-card{padding:8px 10px}
+  .do-card h4,.dont-card h4{margin:0 0 4px}
+  /* --- AI sheet: smaller chips so whole option rows fit the screen --- */
+  .ai-chip{font-size:12px;padding:5px 10px}
+  .ai-chips{gap:6px}
+  .ai-block{margin-bottom:2px}
+  .ai-field{font-size:13.5px;padding:7px 9px}
+  .ai-footer .btn{flex:1 1 auto;padding:9px 12px;font-size:13px}
+  /* --- login card: compact, fully visible above the on-screen keyboard --- */
+  .login-overlay{padding:14px calc(10px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));align-items:flex-start;overflow-y:auto}
+  .login-card{padding:24px 18px 20px;border-radius:16px;margin:auto;width:100%;max-width:360px}
+  .login-card h2{font-size:21px}
+  .login-sub{margin:2px 0 14px;font-size:14px}
+  .password-wrapper{margin-bottom:10px}
+  .password-wrapper input{font-size:16px;padding:9px 38px 9px 10px}
+  .hint{font-size:12px;margin-bottom:12px}
+  .login-error{min-height:18px;font-size:12.5px;margin-top:8px}
+  /* --- v4.16 bio zone stays compact & fully on-screen (phone-first) --- */
+  .bio-zone{margin-top:10px}
+  .btn-bio{font-size:13.5px;padding:10px 12px;min-height:44px}
+  .bio-offer{margin-top:12px;padding:10px;border-radius:12px}
+  .bio-offer-text{font-size:12.5px;margin-bottom:8px}
+  .bio-offer-btns .btn{min-width:0;flex:1 1 100px}
+  .btn-sm{padding:8px 10px;font-size:13px;min-height:44px}   /* thumb-friendly even when small */
+  /* --- toast stays inside the screen bounds --- */
+  .toast{font-size:12.5px;padding:9px 16px;max-width:calc(100vw - 20px)}
+}
+/* tiny phones (320–379 px) — final overflow guards for the compact pass */
+@media (max-width:379px){
+  .table-scroll table{min-width:420px}
+  .ai-chip{font-size:11.5px;padding:5px 9px}
+  .sub > span{font-size:12px}
+  .login-card{padding:20px 14px 16px}
 }
 
 /* ============================================================
