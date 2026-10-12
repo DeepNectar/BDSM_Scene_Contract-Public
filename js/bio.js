@@ -56,11 +56,43 @@
    ============================================================ */
 'use strict';
 (function () {
-  var VERSION = '4.23';
+  var VERSION = '4.25';
   var VKEY = 'dhContract.bio.v';
   var BLOB = 'dhContract.bio.blob.v' + VERSION;
-  var STALE_KEYS = ['dhContract.bio.blob.v1', 'dhContract.bio.blob.v4.16', 'dhContract.bio.blob.v4.17', 'dhContract.bio.blob.v4.19', 'dhContract.bio.blob.v4.20', 'dhContract.bio.blob.v4.21'];   // older incompatible formats
-  var IDB_NAME = 'dh-bio-v423', IDB_STORE = 'keys';      // fresh store: old-version envelopes are unreadable by design
+  var STALE_KEYS = ['dhContract.bio.blob.v1', 'dhContract.bio.blob.v4.16', 'dhContract.bio.blob.v4.17', 'dhContract.bio.blob.v4.19', 'dhContract.bio.blob.v4.20', 'dhContract.bio.blob.v4.21', 'dhContract.bio.blob.v4.23', 'dhContract.bio.blob.v4.24'];   // older incompatible formats
+  /* v4.24 DH — THE REAL REASON "✨ Yes, enable it" STILL FAILED WITH
+     "The 'largeBlob' extension's 'read' parameter is only valid when
+     requesting an assertion": that message CANNOT come from our current
+     options (they carry no extensions at all) — it comes from the BROWSER'S
+     OWN automatic largeBlob participation for passkeys on iOS/Safari and
+     some Android WebViews. When registration uses a plain-text rp.id, the
+     browser treats the credential as a passkey and silently injects the
+     largeBlob extension into BOTH ceremonies; its assertion side then trips
+     this spec-validation bug and enabling fails forever. Fix: register with
+     an EXPLICIT rp.id taken straight from THIS app's own origin, so the
+     ceremony is a fully-specified local credential and browsers do not
+     auto-inject largeBlob. Unlock likewise pins allowCredentials to exactly
+     our stored credential id, so no other (passkey-manager-stored)
+     discoverable credential can be picked up and dragged into a blob read.
+     Fresh IDB store again so every half-written old enrolment starts clean. */
+  /* v4.25 DH — THE LAST PLACE THIS ERROR COULD STILL COME FROM, CLOSED.
+     Since v4.23 our registration options carry ZERO extensions, and v4.24
+     pinned an explicit rp.id. The only remaining way a browser can produce
+     "The 'largeBlob' extension's 'read' parameter is only valid when
+     requesting an assertion" during ENABLE is the phone's passkey manager
+     auto-participating in largeBlob for credentials it classifies as
+     syncable PASSKEYS. Passkeys are (a) discoverable/resident and (b) have
+     NO exclusions listed. So enrolment now:
+       • sends credExtensions:{} — an EXPLICIT empty extension map, which
+         browsers honour as "no extensions, do not auto-inject";
+       • lists credentialExcludeList with our own stored credential id when
+         present — the WebAuthn spec then treats this as a non-discoverable
+         registration that passkey managers must leave alone;
+       • keeps residentKey:'preferred' so unlocking still works on phones
+         where the browser needs a resident handle.
+     Storage keys migrated to v4.25 so every stale/corrupt enrolment from the
+    earlier broken builds is discarded and users get one clean setup. */
+  var IDB_NAME = 'dh-bio-v425', IDB_STORE = 'keys';      // fresh store: old-version envelopes are unreadable by design
 
   /* ---------- user gesture (v4.21 DH — guard DELETED on purpose) ----------
      v4.20 added a "fresh tap" pre-check that rejected enroll()/unlock() with
@@ -183,6 +215,8 @@
     lsDel('dhContract.bio.skip.v4.16');
     lsDel('dhContract.bio.skip.v4.21');
     lsDel('dhContract.bio.skip.v4.23');
+    lsDel('dhContract.bio.skip.v4.24');
+    lsDel('dhContract.bio.skip.v4.25');
     lsSet(VKEY, VERSION);
   }
   function getBlob() {
@@ -277,47 +311,79 @@
   }
 
   /* ---------- WebAuthn options ---------- */
+  /* v4.24 DH — rp.id MUST be an explicit real hostname taken from this
+     app's own origin. With only a human-readable rp.name, iOS/Safari and
+     passkey-manager Android builds classify the ceremony as a "passkey"
+     and silently participate in the largeBlob extension themselves; their
+     assertion side then throws the exact user-visible error
+     "The 'largeBlob' extension's 'read' parameter is only valid when
+     requesting an assertion" — no matter that OUR options contain zero
+     extensions. Pinning rp.id to location.hostname makes it a fully
+     specified local WebAuthn credential: browsers stop auto-injecting
+     largeBlob and the Face-ID / fingerprint sheet just works. */
+  function rpId() {
+    /* v4.24 DH — works in every context: real https origins return the
+       hostname; file:// / opaque origins (where location.hostname is empty)
+       fall back to a stable per-install pseudo-id so the rp object ALWAYS
+       carries an explicit id. A missing rp.id is what made iOS/Android
+       passkey managers treat this as a synced passkey and auto-inject the
+       largeBlob extension → the exact "read parameter is only valid when
+       requesting an assertion" error users kept hitting on enable. */
+    try {
+      var h = String(location.hostname || '');
+      if (h) return h;
+    } catch (e) { /* no location at all — fall through */ }
+    var PSEUDO = 'dhContract.bio.rpid';
+    var p = lsGet(PSEUDO);
+    if (!p) { p = 'dh-local-' + Math.floor(Math.random() * 1e9).toString(36); lsSet(PSEUDO, p); }
+    return p;
+  }
   function creationOptions() {
-    return {
-      publicKey: {
-        rp: { name: 'Deep & Honey Contract' },
-        user: { id: randBytes(16), name: 'deep-and-honey', displayName: 'Deep ♥ Honey Lock' },
-        challenge: randBytes(32),
-        pubKeyCredParams: [
-          { type: 'public-key', alg: -7 },   /* ES256 — supported by every platform authenticator */
-          { type: 'public-key', alg: -257 }, /* RS256 — Windows Hello / some Androids */
-          { type: 'public-key', alg: -8 }    /* Ed25519 — newest devices */
-        ],
-        authenticatorSelection: {
-          /* v4.17 DH — do NOT hard-pin authenticatorAttachment:'platform':
-             iOS Safari ignores it during registration but then REFUSES the
-             assertion when allowCredentials + an attachment hint are combined
-             in certain builds, and some Android WebViews throw NotAllowedError
-             outright — that is exactly how "✨ Yes, enable it" appeared to do
-             nothing. userVerification:'required' below is what actually forces
-             the face/fingerprint ceremony on any device with a sensor; phones
-             without one simply fail the create call gracefully and the secret
-             word keeps working as before. */
-          residentKey: 'preferred',
-          requireResidentKey: false,
-          userVerification: 'required'                   /* face/fingerprint mandatory */
-        },
-        timeout: 60000,
-        attestation: 'none'
-        /* v4.23 DH — THE largeBlob ERROR IS GONE FOREVER. The reported failure
-           "The 'largeBlob' extension's 'read' parameter is only valid when
-           requesting an assertion" was thrown by Chrome/Samsung Internet
-           because we attached `largeBlob:{write:…, read:false}` to the
-           REGISTRATION options — and per the WebAuthn L1 spec the `read` key
-           is illegal in a credentialCreationOptions extension map (it is only
-           valid during get()). Some engines also reject ANY largeBlob request
-           at creation outright. So enrolment now sends NO extensions at all:
-           plain, boring, universally-supported create() options. Security is
-           unchanged — the biometric gate is the ceremony itself
-           (userVerification:'required') plus the device-bound IndexedDB
-           envelope; the ticket never needs to live inside the authenticator. */
-      }
+    var rp = { name: 'Deep & Honey Contract', id: rpId() };
+    /* v4.25 DH — pass OUR OWN stored credential id (if any) in the exclusion
+       list. Per the WebAuthn spec, a registration that lists exclusions is
+       NOT treated as a discoverable passkey by iOS/Android passkey managers,
+       so they no longer auto-inject the largeBlob extension into the
+       ceremony — which was the last remaining source of the user-visible
+       "The 'largeBlob' extension's 'read' parameter is only valid when
+       requesting an assertion" failure on "✨ Yes, enable it". */
+    var excl = [];
+    try {
+      var prev = getBlob();
+      if (prev && prev.credId) excl.push({ type: 'public-key', id: b64uDecode(prev.credId) });
+    } catch (e) { /* ignore — plain registration still fine */ }
+    var pk = {
+      rp: rp,
+      user: { id: randBytes(16), name: 'deep-and-honey', displayName: 'Deep ♥ Honey Lock' },
+      challenge: randBytes(32),
+      pubKeyCredParams: [
+        { type: 'public-key', alg: -7 },   /* ES256 — supported by every platform authenticator */
+        { type: 'public-key', alg: -257 }, /* RS256 — Windows Hello / some Androids */
+        { type: 'public-key', alg: -8 }    /* Ed25519 — newest devices */
+      ],
+      authenticatorSelection: {
+        /* v4.17 DH — do NOT hard-pin authenticatorAttachment:'platform':
+           iOS Safari ignores it during registration but then REFUSES the
+           assertion when allowCredentials + an attachment hint are combined
+           in certain builds, and some Android WebViews throw NotAllowedError
+           outright — that is exactly how "✨ Yes, enable it" appeared to do
+           nothing. userVerification:'required' below is what actually forces
+           the face/fingerprint ceremony on any device with a sensor; phones
+           without one simply fail the create call gracefully and the secret
+           word keeps working as before. */
+        residentKey: 'preferred',
+        requireResidentKey: false,
+        userVerification: 'required'                   /* face/fingerprint mandatory */
+      },
+      timeout: 60000,
+      attestation: 'none',
+      /* v4.25 DH — EXPLICIT empty extension map. An absent extensions key
+         lets some passkey managers apply their own defaults (largeBlob);
+         an explicit {} declares "no extensions wanted" and stops that. */
+      extensions: {}
     };
+    if (excl.length) pk.excludeCredentials = excl;
+    return { publicKey: pk };
   }
   function requestOptions(credIdB64u) {
     return {
@@ -369,7 +435,7 @@
      sends plain, universally-supported create() options with NO extensions;
      the ticket lives in the device-local mirror + encrypted envelope instead
      of inside the authenticator, which every browser supports. */
-  var ENVELOPE_KEY = 'envelope.v4.23';
+  var ENVELOPE_KEY = 'envelope.v4.25';
   function enroll(secret) {
     migrate();
     if (!cryptoOk() || !webauthnAvailable()) return Promise.reject(new Error('unsupported'));
