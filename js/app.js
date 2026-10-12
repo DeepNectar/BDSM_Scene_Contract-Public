@@ -471,7 +471,7 @@
     }
   };
 
-  const APP_VERSION = 'v4.27 DH';
+  const APP_VERSION = 'v4.28 DH';
   const WHATS_NEW = [
     '🗑 v4.27: “✖ DELETE DAY” NOW SHOWS ON EVERY SINGLE DAY. Days saved by older builds carried toolbar HTML without the delete button, so after a cloud restore only some days showed it. The app now repairs every day toolbar automatically — each day gets its full row (📌 Day finished · ▾ Collapse/Expand · 🗑 Clear this day · ✖ Delete day) on load, after every sync, and before every save — and pushes the repaired markup back to the cloud so BOTH phones show it everywhere ♥',
     '🔐 v4.25: FACE / FINGERPRINT — THE largeBlob ERROR, CLOSED FROM EVERY SIDE. The “read parameter is only valid when requesting an assertion” message came from your phone’s PASSKEY MANAGER auto-injecting the large-blob feature into our setup request. Since v4.23 our own options carry no extensions and v4.24 pinned the domain — this update closes the last door: enabling now explicitly declares “no extensions wanted” and lists our own credential as an exclusion, so iOS/Android treat the lock as a plain on-device credential their passkey sync must leave alone. Fresh storage keys mean every half-broken old enrolment is discarded automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm Face ID/fingerprint — done ♥',
@@ -1803,9 +1803,18 @@
      js/pdf.js have defined their globals.) */
   const bootContract = async () => {
     /* v3.6 DH — wait for the first Supabase pull before replaying state,
-       otherwise the contract boots from an empty mirror and never syncs. */
+       otherwise the contract boots from an empty mirror and never syncs.
+       v4.28 DH — THE "CONNECTING TOO LONG" FIX: CloudStore.ready now resolves
+       within ~5 s at the latest (fast boot from this device's local copy);
+       the real cloud pull keeps running in the background and, when it lands,
+       either fires the realtime listeners or window.dhApplyCloudState() below
+       replays it into the DOM right after boot. The user never waits on the
+       network again. */
     try { await window.CloudStore.ready; } catch { /* offline → boot local-only */ }
     restoreDays(); loadSaved(); applySignatures();
+    /* v4.28 DH — if the background pull finished while we were booting, apply
+       its fresher state immediately (no page refresh needed). */
+    try { if (typeof window.dhApplyCloudState === 'function') window.dhApplyCloudState(); } catch { /* ignore */ }
     /* v4.18 DH — one tick after everything is in the DOM, refit every box to
        THIS screen's width (fonts may still be loading → refit once more when
        they finish). Guarantees all boxes/text sit inside the phone screen. */

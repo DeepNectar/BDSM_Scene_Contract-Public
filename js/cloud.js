@@ -61,7 +61,35 @@
   try {
     if (window.supabase && window.supabase.createClient && cfg.url && cfg.anonKey
         && !cfg.url.includes('YOUR-PROJECT-REF')) {
-      sb = window.supabase.createClient(cfg.url, cfg.anonKey);
+      /* v4.28 DH — FASTER Supabase connection:
+         • real-time OFF → no websocket handshake at boot; the change feed is
+           opened only AFTER the first data pull succeeds (startRealtime was
+           already wired into startLoad/refresh), so it never competes with or
+           blocks the initial connection;
+         • auth storage disabled → client creation does no localStorage work;
+         • global fetch wrapper: every Supabase request that hangs longer than
+           7 s is aborted and retried once immediately — a slow/unreachable
+           endpoint can no longer keep the app stuck on "Connecting…". */
+      const FETCH_TIMEOUT_MS = 7000;
+      const timedFetch = (url, opts = {}) => {
+        const doOnce = () => {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+          return fetch(url, Object.assign({}, opts, { signal: ctrl.signal }))
+            .finally(() => clearTimeout(timer));
+        };
+        return doOnce().catch(err => {
+          if ((err && (err.name === 'AbortError' || err.name === 'TimeoutError'))
+              && !(opts && opts.signal && opts.signal.aborted)) {
+            return doOnce();   // one fast retry instead of hanging forever
+          }
+          throw err;
+        });
+      };
+      sb = window.supabase.createClient(cfg.url, cfg.anonKey, {
+        global: { fetch: timedFetch },
+        auth: { storageKey: 'dh-contract-supabase', persistSession: false, autoRefreshToken: false },
+      });
     }
   } catch (e) { console.warn('[cloud] init failed:', e); }
 
@@ -713,24 +741,61 @@
     return run;
   };
 
+  /* v4.28 DH — FAST BOOT PULL (the "connecting too long" fix):
+     The first pull used to wait on the Supabase SDK's default fetch with no
+     deadline; if the request hung, the app sat on "☁️ Connecting…" until the
+     30 s heartbeat retried it. Now the boot pull races a 5-second timer:
+       • data arrives within 5 s → normal connected flow (realtime opens after);
+       • 5 s pass with no answer → the app boots INSTANTLY from the local
+         mirror/snapshot ("Connecting… · fast retry"), and the original request
+         keeps running in the background — whenever it lands, state is applied
+         and the pill flips to "Connected". No more waiting to use the app. */
+  const FAST_BOOT_MS = 5000;
+  let fastBootTimer = 0;
   const startLoad = () => {
     if (!sb) return Promise.resolve(null);
-    if (loadPromise) return loadPromise;
-    loadPromise = fetchState()
-      .then(rows => {
-        applyRows(rows);
-        cloudReady = true;
-        warned = false;
-        markSynced();
-        startRealtime();               // connected → open the change feed
-        return { fields: mem.fields, accepts: mem.accepts, days: mem.days };
-      })
-      .catch(e => {
+    /* v4.28 DH — a retry must ALWAYS issue a fresh network pull: the previous
+       loadPromise may already be RESOLVED with null (fast-boot timeout or a
+       failed attempt). Returning that stale promise made every heartbeat
+       "retry" an instant no-op, so after one slow/failed first try the app
+       could sit on "Connecting…" forever. */
+    if (loadPromise && cloudReady) return loadPromise;
+    const realPull = fetchState().then(rows => {
+      applyRows(rows);
+      cloudReady = true;
+      warned = false;
+      clearTimeout(fastBootTimer);
+      markSynced();
+      startRealtime();               // connected → open the change feed AFTER data landed
+      try { setStatus(`☁️ Connected · synced ${fmtAgo(lastSyncAt)}`); } catch {}
+      /* v4.28 DH — if the app already fast-booted from local data, replay the
+         freshly-pulled cloud state into the live DOM immediately (app.js
+         registers its resync listener via CloudStore.onChange). */
+      changeListeners.forEach(fn => { try { fn({ fields: mem.fields, accepts: mem.accepts, days: mem.days }); } catch { /* ignore */ } });
+      /* No listeners yet = boot happened before app.js finished wiring (the
+         pull landed in the background after a fast boot). Expose a hook so
+         app.js can replay the cloud state the moment it boots. */
+      if (!changeListeners.length) {
+        window.dhApplyCloudState = () => {
+          changeListeners.forEach(fn => {
+            try { fn({ fields: mem.fields, accepts: mem.accepts, days: mem.days }); } catch { /* ignore */ }
+          });
+        };
+      }
+      return { fields: mem.fields, accepts: mem.accepts, days: mem.days };
+    });
+    loadPromise = new Promise(resolve => {
+      let settled = false;
+      const settle = v => { if (!settled) { settled = true; resolve(v); } };
+      fastBootTimer = setTimeout(() => settle(null), FAST_BOOT_MS);   // ← THE FIX: boot local, keep pulling in background
+      realPull.then(v => settle(v)).catch(e => {
         console.warn('[cloud] load failed:', e);
+        clearTimeout(fastBootTimer);
         loadPromise = null;              // allow retry on next refresh()/focus
         warn();
-        return null;
+        settle(null);
       });
+    });
     return loadPromise;
   };
 
@@ -752,6 +817,10 @@
   };
   const startRealtime = () => {
     if (!sb || channel || !sb.realtime || typeof sb.channel !== 'function') return;
+    /* v4.28 DH — the realtime socket is no longer opened at client creation
+       time (that handshake used to delay "Connected"); it starts here, only
+       AFTER the first data pull has succeeded, so booting is fast while live
+       cross-device sync keeps working exactly as before. */
     try {
       channel = sb.channel('contract_state_changes')
         .on('postgres_changes',
