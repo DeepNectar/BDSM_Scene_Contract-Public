@@ -298,8 +298,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.14 DH';
+  const APP_VERSION = 'v4.16 DH';
   const WHATS_NEW = [
+    '🔐 v4.16: FACE & FINGERPRINT UNLOCK — whatever your phone supports! After you unlock with our secret word once, the app offers “✨ Yes, enable it”: your phone then asks for Face ID / fingerprint (the device sensor decides — the app NEVER sees or stores any biometric data) and a device-bound passkey is created. From then on the login card shows “🔓 Unlock with Face / Fingerprint” and one look/touch opens the contract. Each phone enrols its own biometric (stored locally on that device only, never synced); if a biometric ever fails or is removed from the phone, the normal secret-word login still works exactly as before, and you can re-enable anytime.',
     '📱 v4.14: TOTAL PHONE COMPACT PASS — everything in the app now adjusts to the phone screen so ALL of it is visible properly: the header version/cloud pills and Log Book line stack neatly instead of colliding, the contract-meta line (contract no. / effective date / parties) becomes one tidy column with the date pill wrapping inside the screen, wide tables scroll sideways inside their own rounded box without clipping or pushing the page wide, every input box is bounded by the viewport (auto-growing fields never exceed the screen), debrief & do/don\'t boxes go single-column, AI chips shrink to fit whole rows, the login card is compact and fully visible above the keyboard, and the toast stays on-screen. Also fixed a service-worker syntax error that kept phones serving stale cached files.',
     '☁️ v4.13c: CROSS-DEVICE SYNC GUARANTEE — if a day is created and saved on ONE device, it now syncs to EVERY device that opens this site with ALL its details: the day page itself, every typed field (Day section + Pre-Scene Affidavit), every checklist tick and every signature. Fixed the last silent-loss paths: the local day snapshot reader in cloud.js now understands BOTH storage shapes ({list:[…]} and flat {days:[…]}/legacy array) so a saved day can never be missed when merging from localStorage; the 💾 Save button awaits the REAL completion of every cloud write (fields + accepts + all day pages) before saying “Saved ✓”; deletions stay deleted everywhere via permanent tombstones; and a two-device automated test (tests/test_cross_device_sync.js) proves the whole create → save → appear-on-the-other-phone flow.',
     '🔐 v4.10b: LOGIN GATE FIXED & HARDENED — previously, if the app script failed to start on a device (or an old cached copy was served), the Unlock button had NO listener at all: any password seemed to “work” (nothing happened) and the wrong-password popup never appeared. Now the gate is wired with defensive checks, empty/near-miss passwords are always rejected with the red error + shake, Enter submits properly, the no-JS watchdog covers the login screen too (it alerts if app.js hasn’t loaded), and a new automated login test guards this forever.',
@@ -351,19 +352,73 @@
   }
   document.body.appendChild(particleHost);
 
-  /* ---------- login ----------
-     v4.10b DH — hardened gate:
-     • if js/app.js ever fails to load, the page would sit there with NO listener
-       at all — the button looked dead and nothing happened on any password.
-       Now index.html's no-JS watchdog covers the login screen too, but as a
-       second belt we verify every element exists before wiring;
-     • the check is done inside tryLogin via an exact constant-time-ish compare
-       of trimmed input vs SECRET — same secret as always. */
+  /* ---------- login gate + biometric wiring (v4.16 DH) ---------- */
   const overlay  = $('#login-overlay');
   const pwInput  = $('#password-input');
   const pwToggle = $('#toggle-password');
   const errEl    = $('#login-error');
   const SECRET   = 'Deepnectar@1612@';
+
+  /* v4.16 DH — Face / Fingerprint unlock (js/bio.js, WebAuthn passkey).
+     Device-local only: never synced, never leaves this phone, and the app
+     itself never sees any biometric data — the OS sensor does the matching.
+     Password login below is completely untouched; bio is an extra door. */
+  const bioZone      = $('#bio-zone');
+  const bioUnlockBtn = $('#bio-unlock-btn');
+  const bioOffer     = $('#bio-offer');
+  const bioEnableBtn = $('#bio-enable-btn');
+  const bioSkipBtn   = $('#bio-skip-btn');
+  const bioNameEl    = $('#bio-method-name');
+  let   bioBusy      = false;
+
+  const bioReady = () => !!(window.DhBio && window.DhBio.supported);
+
+  const showBioZone = label => {
+    if (!bioZone || !bioUnlockBtn) return;
+    bioUnlockBtn.textContent = '🔓 Unlock with ' + label;
+    bioZone.classList.remove('hidden');
+  };
+  const hideBioZone = () => { if (bioZone) bioZone.classList.add('hidden'); };
+
+  const doBioUnlock = () => {
+    if (bioBusy || !window.DhBio) return;
+    bioBusy = true;
+    bioUnlockBtn.disabled = true;
+    bioUnlockBtn.textContent = '⏳ Looking for you…';
+    window.DhBio.unlock().then(secret => {
+      if (secret && String(secret).trim() === SECRET) {
+        hideBioZone();
+        errEl.textContent = '';
+        unlock();
+      } else {
+        throw new Error('verify-failed');
+      }
+    }).catch(err => {
+      const name = (err && err.name) || '';
+      const msg  = (err && err.message) || '';
+      if (name === 'NotAllowedError' || /cancel|abort|time/.test(msg)) {
+        errEl.textContent = 'Biometric didn’t verify — no worries, use our secret word.';
+      } else {
+        /* stale / unreadable enrolment → drop it so the zone disappears next time */
+        try { window.DhBio.disable(); } catch { /* ignore */ }
+        hideBioZone();
+        errEl.textContent = 'Face/Fingerprint lock needs re-enabling — use our secret word this once.';
+      }
+      bioUnlockBtn.disabled = false;
+      bioUnlockBtn.textContent = '🔓 Unlock with ' + (window.DhBio ? window.DhBio.methodLabel() : 'Face / Fingerprint');
+    }).then(() => { bioBusy = false; });
+  };
+
+  if (bioUnlockBtn) bioUnlockBtn.addEventListener('click', doBioUnlock);
+
+  /* at boot: if this device already has a face/fingerprint enrolment, offer it instantly */
+  if (bioReady()) {
+    Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
+      .then(([sup, enr]) => {
+        if (sup && enr) showBioZone(window.DhBio.methodLabel());
+      })
+      .catch(() => { /* silent — password gate always works */ });
+  }
 
   if (!overlay || !pwInput || !errEl || !$('#login-btn')) {
     /* DOM pieces missing → say so loudly instead of failing silently */
@@ -396,6 +451,7 @@
     if (entered.length && entered === SECRET) {
       errEl.textContent = '';
       unlock();
+      maybeOfferBio();          /* v4.16 DH — offer face/fingerprint enrolment */
     } else {
       errEl.textContent = 'Not our secret word… try again, my love.';
       pwInput.value = '';
@@ -408,6 +464,78 @@
       pwInput.focus();
     }
   };
+
+  /* v4.16 DH — after a successful PASSWORD unlock, offer to enrol this
+     phone's face/fingerprint so the next visit opens with one glance/touch.
+     Only shown when: the device supports platform WebAuthn, nothing is
+     enrolled yet, and the user hasn't permanently dismissed the idea. */
+  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.16';
+  const bioOfferShown = () => !!(bioOffer && !bioOffer.classList.contains('hidden'));
+  const maybeOfferBio = () => {
+    if (!bioReady() || !bioOffer || !bioEnableBtn) return;
+    if (safeGet(BIO_SKIP_KEY)) return;
+    Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
+      .then(([sup, enr]) => {
+        if (!sup || enr) return;
+        if (bioNameEl) bioNameEl.textContent = window.DhBio.methodLabel();
+        bioOffer.classList.remove('hidden');
+      })
+      .catch(() => { /* silent */ });
+  };
+  if (bioEnableBtn) bioEnableBtn.addEventListener('click', () => {
+    if (bioBusy || !window.DhBio) return;
+    bioBusy = true;
+    bioEnableBtn.disabled = true;
+    bioEnableBtn.textContent = '⏳ Confirm your ' + (window.DhBio.methodLabel()) + '…';
+    window.DhBio.enroll(SECRET).then(ok => {
+      bioOffer.classList.add('hidden');
+      if (ok) {
+        showBioZone(window.DhBio.methodLabel());
+        toast('💞 ' + window.DhBio.methodLabel() + ' enabled for this phone — one look/touch unlocks next time ♥');
+      } else {
+        toast('Couldn’t enable biometrics here — the secret word still works perfectly ♥');
+      }
+    }).catch(() => {
+      bioOffer.classList.add('hidden');
+      toast('Couldn’t enable biometrics here — the secret word still works perfectly ♥');
+    }).then(() => {
+      bioBusy = false;
+      bioEnableBtn.disabled = false;
+      bioEnableBtn.textContent = '✨ Yes, enable it';
+    });
+  });
+  if (bioSkipBtn) bioSkipBtn.addEventListener('click', () => {
+    safeSet(BIO_SKIP_KEY, "1");
+    bioOffer.classList.add('hidden');
+  });
+
+  /* v4.16 DH — auto-open the biometric prompt the moment the login screen is
+     actually on screen (fresh load / re-lock), but never fight the password
+     field: only when nobody has typed anything, no ceremony is running, and
+     we haven't already prompted during this view of the gate. */
+  let bioAutoTried = false;
+  const tryAutoBio = () => {
+    if (bioBusy || bioAutoTried) return;
+    if (!overlay || overlay.classList.contains('hidden')) return;   /* gate not visible */
+    if (bioOfferShown()) return;                                    /* enrolment offer first */
+    if ((pwInput.value || '').trim().length) return;                /* user is typing → hands off */
+    if (!bioZone || bioZone.classList.contains('hidden')) return;   /* not enrolled/supported */
+    bioAutoTried = true;
+    doBioUnlock();
+  };
+  if (document.visibilityState === 'visible') setTimeout(tryAutoBio, 500);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') tryAutoBio();
+  });
+  /* once unlocked, reset so the NEXT time the gate appears it can auto-prompt again */
+  const resetBioAuto = () => { bioAutoTried = false; };
+  if (overlay && window.MutationObserver) {
+    new MutationObserver(muts => {
+      for (const m of muts) {
+        if (overlay.classList.contains('hidden')) resetBioAuto();
+      }
+    }).observe(overlay, { attributes: true, attributeFilter: ['class'] });
+  }
 
   $('#login-btn').addEventListener('click', tryLogin);
   pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); tryLogin(); } });

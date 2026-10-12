@@ -12,15 +12,16 @@
 /* v4.14 DH — single cache name (a leftover duplicate `const CACHE_NAME`
    declaration used to throw a SyntaxError and kill the whole service
    worker, so phone installs kept serving stale cached files). */
-const CACHE_NAME = 'dh-contract-v53';
+const CACHE_NAME = 'dh-contract-v54';
 const APP_SHELL = [
   './',
   './index.html',
-  './css/styles.css?v=49',
+  './css/styles.css?v=50',
   './js/supabase-config.js',
   './js/cloud.js?v=44',
   './js/logbook.js?v=16',
-  './js/app.js?v=50',
+  './js/app.js?v=51',
+  './js/bio.js?v=1',
   './manifest.webmanifest',
 ];
 
