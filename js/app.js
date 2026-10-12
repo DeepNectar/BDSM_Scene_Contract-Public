@@ -471,8 +471,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.32 DH';
+  const APP_VERSION = 'v4.33 DH';
   const WHATS_NEW = [
+    '🩹 v4.33: BOTH BUGS FIXED IN ONE PLACE — app.js referenced the login variables (SECRET, overlay, pwInput, errEl, pwToggle) without ever declaring them, so the script crashed at load with a ReferenceError. That crash is exactly why the 💾 Save button did nothing AND why the header pill was stuck on "Connecting to Supabase…" forever. The declarations are restored, every cache version bumped so old broken copies can\'t survive a refresh ♥',
     '🔓 v4.32: BIOMETRICS FULLY REMOVED — the Face/Fingerprint (WebAuthn passkey) unlock, its offer box and every line of its code are gone by request. Login is now ONLY our secret word, which always worked and still works exactly as before. Also in this build: js/cloud.js no longer crashes at script-load on any browser (a hoisting bug that left the pill stuck on "☁️ Connecting to Supabase…" after EVERY refresh — the real "connecting cloud error after refresh"), the status pill updates live within seconds instead of only every 30 s, failed pulls retry automatically with a fresh request, and the AI "✨ Create day" button now always creates the NEXT free day (Day 2, 3…) instead of duplicating Day 1 ♥',
     '☁️ v4.30: THE "CLOUD OFFLINE" MESSAGE IS GONE FOR GOOD. Your Supabase project (qbnxcfwwsuqfmearyris) was live-tested again with your exact keys — HTTP 200, healthy, answering in under a second. The old red error text has been retired: if the network ever blips for a moment, the pill now calmly says "☁️ Cloud — reconnecting automatically…" and flips back to "Connected · synced just now" by itself within ~30 s. Nothing you need to do ♥',
     '☁️ v4.29: CLOUD OFFLINE ERROR FIXED — YOUR SUPABASE KEYS ARE CONFIRMED CORRECT. A live test of https://qbnxcfwwsuqfmearyris.supabase.co with your exact URL + anon key returned HTTP 200 (healthy) — but responses took 8–17 seconds because the project region is far away / was waking up. The app gave up at 7 s and wrongly shouted "Cloud offline". Now every request waits up to 15 s, the pill shows "retrying automatically…" with the real reason in its tooltip, and it flips to "Connected" as soon as Supabase answers ♥',
@@ -530,6 +531,17 @@
   document.body.appendChild(particleHost);
 
   /* ---------- login gate ---------- */
+  /* v4.33 DH — CRITICAL FIX: overlay / pwInput / errEl / pwToggle / SECRET were
+     referenced by the login-gate code below but NEVER declared, so app.js threw
+     "ReferenceError: overlay is not defined" at load time. That single error
+     killed the whole IIFE → the 💾 Save button was dead and the header pill
+     stayed stuck on "☁️ Connecting to Supabase…" forever (cloud status handlers
+     in js/cloud.js never got wired). Declaring them here fixes BOTH bugs. */
+  const SECRET  = 'Deepnectar@1612@';        // our secret word (exact match, trimmed)
+  const overlay = $('#login-overlay');
+  const pwInput = $('#password-input');
+  const errEl   = $('#login-error');
+  const pwToggle = $('#toggle-password');
 
   if (!overlay || !pwInput || !errEl || !$('#login-btn')) {
     /* DOM pieces missing → say so loudly instead of failing silently */
