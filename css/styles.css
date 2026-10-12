@@ -362,23 +362,7 @@ select{border:1px solid var(--line);border-radius:8px;padding:3px 7px;font-size:
 .hint{font-size:12.5px;color:var(--ink-soft);font-style:italic;margin-bottom:16px}
 .login-btn{width:100%}
 
-/* ---------- v4.16 DH · biometric (Face / Fingerprint) unlock ---------- */
-.bio-zone{margin-top:12px}
-.bio-divider{display:flex;align-items:center;gap:10px;margin:0 0 10px;color:var(--ink-soft);font-size:12px;font-style:italic}
-.bio-divider::before,.bio-divider::after{content:"";flex:1;height:1px;background:var(--line)}
-.btn-bio{
-  width:100%;background:#fff;border:1.5px solid var(--accent);color:var(--accent);
-  font-weight:600;border-radius:12px;padding:11px 12px;min-height:44px;cursor:pointer;
-  transition:background .2s,transform .1s;
-}
-.btn-bio:hover{background:rgba(163,112,92,.08)}
-.btn-bio:active{transform:scale(.98)}
-.btn-bio:disabled{opacity:.65;cursor:wait}
-.bio-offer{margin-top:14px;padding:12px;border:1px dashed var(--accent);border-radius:14px;background:rgba(163,112,92,.06)}
-.bio-offer-text{font-size:13.5px;margin:0 0 10px;color:var(--ink)}
-.bio-offer-text strong{color:var(--accent)}
-.bio-offer-btns{display:flex;gap:8px;flex-wrap:wrap}
-.bio-offer-btns .btn{flex:1 1 auto;min-width:120px}
+/* (biometric styles removed — feature retired) */
 .btn-sm{padding:8px 12px;font-size:13.5px;min-height:40px;border-radius:10px}
 
 .login-error{min-height:20px;margin-top:10px;font-size:13px;color:var(--no)}
@@ -724,13 +708,7 @@ html,body{min-height:100vh;min-height:100dvh}
   .password-wrapper input{font-size:16px;padding:9px 38px 9px 10px}
   .hint{font-size:12px;margin-bottom:12px}
   .login-error{min-height:18px;font-size:12.5px;margin-top:8px}
-  /* --- v4.16 bio zone stays compact & fully on-screen (phone-first) --- */
-  .bio-zone{margin-top:10px}
-  .btn-bio{font-size:13.5px;padding:10px 12px;min-height:44px}
-  .bio-offer{margin-top:12px;padding:10px;border-radius:12px}
-  .bio-offer-text{font-size:12.5px;margin-bottom:8px}
-  .bio-offer-btns .btn{min-width:0;flex:1 1 100px}
-  .btn-sm{padding:8px 10px;font-size:13px;min-height:44px}   /* thumb-friendly even when small */
+    .btn-sm{padding:8px 10px;font-size:13px;min-height:44px}   /* thumb-friendly even when small */
   /* --- toast stays inside the screen bounds --- */
   .toast{font-size:12.5px;padding:9px 16px;max-width:calc(100vw - 20px)}
 }
@@ -832,7 +810,7 @@ details[open].lb-form-box>.lb-form-summary::before{transform:rotate(90deg)}
    ============================================================ */
 html,body{max-width:100vw}
 img,svg,video,canvas{max-width:100%;height:auto}
-.page,.sub,.tagline,.quote,.footer-note,.lock-note,.day-finished,.logbook-status-line,.checklist-item,.debrief-grid,.dos-donts,.exec-line,.witness-line,.sign-row,.sig-cards,.btn-group,.lb-form,.lb-form-grid,.lb-group,.ai-block,.ai-chips,.modal-header,.modal-footer,.ai-header,.ai-footer,.bio-zone,.bio-offer,.bio-offer-btns,.login-card,.hint,.login-error,.toast{overflow-wrap:anywhere;word-break:break-word}
+.page,.sub,.tagline,.quote,.footer-note,.lock-note,.day-finished,.logbook-status-line,.checklist-item,.debrief-grid,.dos-donts,.exec-line,.witness-line,.sign-row,.sig-cards,.btn-group,.lb-form,.lb-form-grid,.lb-group,.ai-block,.ai-chips,.modal-header,.modal-footer,.ai-header,.ai-footer,.login-card,.hint,.login-error,.toast{overflow-wrap:anywhere;word-break:break-word}
 th,td,label,strong,span,p,li{overflow-wrap:anywhere}
 table{table-layout:auto}
 
@@ -895,7 +873,7 @@ table{table-layout:auto}
 html{overflow-x:hidden}
 body{overflow-x:hidden!important;max-width:100vw}
 .contract-container{max-width:min(1100px,100%);width:100%;overflow-wrap:anywhere}
-.page,.contract-header,.seal,.login-card,.bio-offer{max-width:100%;overflow-wrap:anywhere}
+.page,.contract-header,.seal,.login-card{max-width:100%;overflow-wrap:anywhere}
 h1,h2,h3,h4,p,li,span,label,strong,em,i{overflow-wrap:anywhere;word-break:normal}
 pre,code{white-space:pre-wrap;overflow-wrap:anywhere}
 img{max-width:100%;height:auto;display:block;margin-left:auto;margin-right:auto}

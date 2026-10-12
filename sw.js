@@ -21,7 +21,6 @@ const APP_SHELL = [
   './js/cloud.js?v=46',
   './js/logbook.js?v=16',
   './js/app.js?v=61',
-  './js/bio.js?v=7',
   './manifest.webmanifest',
 ];
 
