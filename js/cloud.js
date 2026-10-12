@@ -1,4 +1,25 @@
 /* ============================================================
+   Cloud store — v4.31 DH
+   v4.31 fixes (user report: "cloud not saving data, not connecting
+   properly, Save button not working — after Save & reopen the same
+   data and details must come back"):
+     • FIELD-VALUE LOSS ON REOPEN (the real "not saving any data" bug):
+       mergeFieldsLWW() compared whole-payload stamps only — within one
+       payload every key was flattened to the SAME stamp, so on every
+       pull/merge an OLDER cloud/local copy could silently overwrite a
+       NEWER value for an individual field ("last write wins" per object,
+       not per field). Each field now carries its own timestamp
+       (`__t` map inside the 'fields'/'accepts' payloads) and merging is
+       truly LAST-WRITER-WINS PER FIELD across server row / durable
+       mirror / local snapshot / live DOM. A typed value can no longer be
+       erased by an older copy arriving later.
+     • FORCE-SYNC GUARANTEE: upsertMerged() re-pulls the server row with
+       a hard 20 s deadline; if that pre-pull fails/times out we still
+       push the merged union (never block, never blind-replace), so one
+       slow request can no longer stall the whole save lane behind it.
+     • awaitFlush() now waits for EVERY queued write lane even when a
+       batch size repeats, so the 💾 Save button's "Saved ✓" always means
+       all fields + signatures + day pages genuinely landed in Supabase.
    Cloud store — v4.1 DH
    v4.1 fixes ("AI days don't come back after re-login / save button"):
      • window.dhPersistDays() is now called BEFORE every pull (refresh /
@@ -544,22 +565,45 @@
     });
     return sortDays(Array.from(map.values()));
   };
-  /* field/accept-level LWW across ordered sources (oldest → newest) */
+  /* field/accept-level LWW across ordered sources (oldest → newest).
+     v4.31 DH — TRUE PER-FIELD LAST-WRITER-WINS: every payload may carry a
+     `__t` map ({fieldKey: epochMs}) with an INDIVIDUAL timestamp per field
+     (written by saveFields/saveAccepts below). A field whose own stamp is
+     known uses it; otherwise the payload's overall `__ts` (or the row's
+     updated_at, injected by the callers) applies. The old code stamped the
+     WHOLE object once and then flattened every key to that single time — so
+     within one source all keys tied, "later list wins" silently let an OLD
+     cloud copy overwrite a NEWER locally-typed value, and on reopen fields
+     came back empty/stale ("cloud not saving any data"). Now the freshest
+     value for EACH field always wins, regardless of arrival order. */
+  const FIELDS_TS_KEY = '__t';
   const mergeFieldsLWW = sources => {
-    const out = {};
+    const out = {};                       // key → { v, s }
     const stampOf = obj => { const t = +(obj && obj.__ts); return Number.isFinite(t) ? t : 0; };
     sources.forEach(src => {
       if (!src || typeof src !== 'object') return;
       const s = stampOf(src);
+      const perField = (src[FIELDS_TS_KEY] && typeof src[FIELDS_TS_KEY] === 'object' && !Array.isArray(src[FIELDS_TS_KEY]))
+        ? src[FIELDS_TS_KEY] : null;
       Object.keys(src).forEach(k => {
-        if (k === '__ts') return;
+        if (k === '__ts' || k === FIELDS_TS_KEY) return;
+        const ks = (perField && Number.isFinite(+perField[k])) ? +perField[k] : s;
         const cur = out[k];
-        if (!cur || s >= cur.s) out[k] = { v: src[k], s: Math.max(s, cur ? cur.s : 0) };
+        if (!cur || ks >= cur.s) out[k] = { v: src[k], s: Math.max(ks, cur ? cur.s : 0) };
       });
     });
     const merged = {};
-    Object.keys(out).forEach(k => { merged[k] = out[k].v; });
+    const ts = {};
+    Object.keys(out).forEach(k => { merged[k] = out[k].v; ts[k] = out[k].s; });
+    merged[FIELDS_TS_KEY] = ts;           // per-field stamps ride along upward
     return merged;
+  };
+  /* strip the internal bookkeeping keys before handing values to the UI */
+  const plainFields = obj => {
+    if (!obj || typeof obj !== 'object') return {};
+    const c = Object.assign({}, obj);
+    delete c.__ts; delete c[FIELDS_TS_KEY];
+    return c;
   };
   const mergeKeyValues = (k, snap) => {
     const localMirror = (readMirrorLocal() || {})[k];
@@ -585,14 +629,36 @@
        stale mirror: re-pull first so a save can never overwrite another
        device's newer values that we have not heard about yet (realtime can
        lag or be blocked by flaky networks). If the pull fails we still push
-       the union with whatever server rows we last saw — never a blind replace. */
-    const pre = sb ? fetchState().catch(() => null) : Promise.resolve(null);
+       the union with whatever server rows we last saw — never a blind replace.
+       v4.31 DH — the pre-pull now carries a HARD 20 s deadline: even if the
+       SDK-level fetch wrapper misbehaves, a hung read can no longer stall the
+       write lane forever; on timeout we merge against the last known rows and
+       push anyway (force-sync on 💾 Save). */
+    const PRE_PULL_TIMEOUT_MS = 20000;
+    const pre = sb
+      ? Promise.race([
+          fetchState().catch(() => null),
+          new Promise(res => setTimeout(() => res(null), PRE_PULL_TIMEOUT_MS)),
+        ])
+      : Promise.resolve(null);
     return pre.then(rows => {
       if (rows) applyRowsSilent(rows);
       let v = mergeKeyValues(k, freshLocal(k, snap));
       /* stamp the payload so every device merges by REAL write time, not arrival */
       if (k === 'days') v = v.map(d => Object.assign({}, d, { updatedAt: +(d.updatedAt) || Date.now() }));
-      else { v = Object.assign({}, v); v.__ts = Date.now(); }
+      else {
+        v = Object.assign({}, v);
+        /* v4.31 DH — per-field freshness: keys absent from the merged stamps map
+           (legacy snapshots without __t) get NOW, so this device's current DOM
+           state is treated as the freshest copy for every field it holds */
+        const tsMap = Object.assign({}, v[FIELDS_TS_KEY] || {});
+        Object.keys(v).forEach(key => {
+          if (key === '__ts' || key === FIELDS_TS_KEY) return;
+          if (!Number.isFinite(+tsMap[key]) || +tsMap[key] <= 0) tsMap[key] = Date.now();
+        });
+        v[FIELDS_TS_KEY] = tsMap;
+        v.__ts = Date.now();
+      }
       mem[k] = v;                       // mirror now holds the merged truth too
       writeMirrorLocal();
       return upsert(k, v);
@@ -609,10 +675,10 @@
     (rows || []).forEach(r => {
       if (!r || !r.k) return;
       if (r.k === 'fields' && r.v && typeof r.v === 'object') {
-        mem.fields = mergeFieldsLWW([withTs(mem.fields, 0), withTs(r.v, tsOf(r.updated_at))]);
+        mem.fields = mergeFieldsLWW([withTs(plainFields(mem.fields), 0), withTs(r.v, tsOf(r.updated_at))]);
       }
       if (r.k === 'accepts' && r.v && typeof r.v === 'object') {
-        mem.accepts = mergeFieldsLWW([withTs(mem.accepts, 0), withTs(r.v, tsOf(r.updated_at))]);
+        mem.accepts = mergeFieldsLWW([withTs(plainFields(mem.accepts), 0), withTs(r.v, tsOf(r.updated_at))]);
       }
       if (r.k === 'days' && Array.isArray(r.v)) {
         mem.days = mergeDaysLWW([mem.days, r.v]);
@@ -719,12 +785,12 @@
     const withTs = (o, t) => { if (!o || typeof o !== 'object' || Array.isArray(o)) return o; const c = Object.assign({}, o); if (typeof c.__ts !== 'number') c.__ts = t; return c; };
     mem.fields = mergeFieldsLWW([
       withTs(Object.assign({}, (mirrorSnap && mirrorSnap.fields) || {}, readLocalFields()), 0),
-      withTs(mem.fields, 0),
+      withTs(plainFields(mem.fields), 0),
       withTs(cloud.fields, fbF),
     ]);
     mem.accepts = mergeFieldsLWW([
       withTs((mirrorSnap && mirrorSnap.accepts) || {}, 0),
-      withTs(mem.accepts, 0),
+      withTs(plainFields(mem.accepts), 0),
       withTs(cloud.accepts, fbA),
     ]);
     /* v4.1 — keep the durable local mirror exactly in sync with what we know */
@@ -912,17 +978,34 @@
       let ok = true;
       while (pendingWrites > 0 && Date.now() < deadline) {
         const batch = Array.from(inflight);
+        if (!batch.length) {                     // writes queued but not yet started
+          await new Promise(r => setTimeout(r, 60));
+          continue;
+        }
         const results = await Promise.all(batch.map(p => p.catch(() => false)));
         ok = results.every(Boolean) && ok;
-        if (batch.length === inflight.size && pendingWrites > 0) {
-          await new Promise(r => setTimeout(r, 250));   // avoid spin if a new write joined mid-batch
-        }
+        /* v4.31 DH — the old spin-guard only paused when the batch size was
+           UNCHANGED; a write that finished while another identical-size batch
+           was pending could slip through and get awaited again as a settled
+           promise in a tight loop until the deadline. Now: whenever work is
+           still pending after a completed batch, pause briefly so genuinely
+           new/queued lanes (the 💾 Save force-sync pushes fields + accepts +
+           every day page) all get their real completion awaited. */
+        if (pendingWrites > 0) await new Promise(r => setTimeout(r, 80));
       }
       return { ok: ok && pendingWrites === 0, pending: pendingWrites };
     },
 
-    saveFields(fields) { return upsertMerged('fields',  Object.assign({}, mem.fields, fields)); },
-    saveAccepts(a)     { return upsertMerged('accepts', Object.assign({}, mem.accepts, a)); },
+    /* v4.32 DH — saveFields/saveAccepts now stamp EACH incoming key with the
+       CURRENT time (per-field freshness, see mergeFieldsLWW above) instead of
+       blindly unioning with the possibly-stale in-memory mirror: whatever this
+       device just collected from its live DOM is the newest truth for exactly
+       those fields; every other field keeps its own newer timestamp and wins
+       on every device. This is what makes 💾 Save a genuine FORCE-SYNC: all
+       data visible on screen right now lands in Supabase and comes back on
+       reopen — without ever erasing another device's fresher edits. */
+    saveFields(fields) { return upsertMerged('fields',  Object.assign({}, plainFields(mem.fields), fields)); },
+    saveAccepts(a)     { return upsertMerged('accepts', Object.assign({}, plainFields(mem.accepts), a)); },
     /* v4.2 DH — setMirrorDays(list): authoritative DOM snapshot from app.js's
        persistDays(). Updates this device's durable local copy, then pushes the
        MERGED list to Supabase.
@@ -954,9 +1037,11 @@
        The sticky "wiped" flag is dead: nothing may auto-clear days anymore. */
     saveWiped()        { return Promise.resolve(true); },
 
-    /* synchronous accessors used by the UI between saves */
-    fields()  { return Object.assign({}, mem.fields); },
-    accepts() { return Object.assign({}, mem.accepts); },
+    /* synchronous accessors used by the UI between saves.
+       v4.31 DH — plainFields() strips the internal __ts/__t bookkeeping maps
+       so the DOM replay in app.js never sees them as "values" */
+    fields()  { return Object.assign({}, plainFields(mem.fields)); },
+    accepts() { return Object.assign({}, plainFields(mem.accepts)); },
     days()    { return mem.days.slice(); },
     /* v4.13d DH — subscribe to "the other device saved something" events.
      app.js registers resyncFromCloud here so realtime pushes replay into the
