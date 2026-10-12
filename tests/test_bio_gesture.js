@@ -8,7 +8,7 @@ if (!global.crypto) global.crypto = crypto.webcrypto;
 
 function makeCtx({ activation }) {
   const store = {}, idbData = {};
-  let createSyncSeen = false, getSyncSeen = false, outsideTask = false;
+  let createSyncSeen = false, getSyncSeen = false, outsideTask = false, noExtensions = false;
   const ctx = {
     console, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, Promise, JSON, Math, Date, parseInt, String, Number, Array, Object, Error, RegExp,
     btoa: s => Buffer.from(s, 'binary').toString('base64'),
@@ -27,13 +27,20 @@ function makeCtx({ activation }) {
           let ranMicro = false; Promise.resolve().then(()=>{ranMicro=true;});
           if (ranMicro) outsideTask = true;         // (should never be true synchronously)
           createSyncSeen = true;
-          const ticket = opts.publicKey.extensions.largeBlob.write;
+          noExtensions = !(opts.publicKey.extensions && Object.keys(opts.publicKey.extensions).length);
+          /* v4.23 DH — enrolment must send NO extensions (largeBlob caused
+             Chrome/Samsung to throw "the 'read' parameter is only valid when
+             requesting an assertion"); reject like those browsers if it does. */
+          if (opts.publicKey.extensions && Object.keys(opts.publicKey.extensions).length > 0) {
+            const e = new Error("The 'largeBlob' extension's 'read' parameter is only valid when requesting an assertion");
+            e.name = 'NotAllowedError'; return Promise.reject(e);
+          }
           const cid = Buffer.from([1,2,3,4]);
           const ad = new Uint8Array(37+16+2+cid.length+77);
           ad[32]=0x41; ad[55]=0; ad[56]=cid.length; cid.forEach((b,i)=>ad[57+i]=b);
           return Promise.resolve({ id:'cred-1', rawId: cid.buffer, response: {
             getAuthenticatorData: () => ad.buffer,
-            getClientDataJSON: () => new TextEncoder().encode(JSON.stringify({type:'webauthn.create', typeInfo:{extension:{largeBlob:{write: (function(){let s='';ticket.forEach(b=>s+=String.fromCharCode(b));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');})()}}}})).buffer,
+            getClientDataJSON: () => new TextEncoder().encode(JSON.stringify({type:'webauthn.create'})).buffer,
           }});
         },
         get() {
@@ -45,7 +52,7 @@ function makeCtx({ activation }) {
     },
   };
   ctx.window = ctx;
-  return { ctx, store, flags: () => ({createSyncSeen, getSyncSeen, outsideTask}) };
+  return { ctx, store, flags: () => ({createSyncSeen, getSyncSeen, outsideTask, noExtensions}) };
 }
 function loadBio(ctx){ vm.runInContext(fs.readFileSync('js/bio.js','utf8'), vm.createContext(ctx), {filename:'bio.js'}); return ctx.DhBio; }
 
@@ -58,6 +65,7 @@ function loadBio(ctx){ vm.runInContext(fs.readFileSync('js/bio.js','utf8'), vm.c
     const B = loadBio(ctx);
     const pEnroll = B.enroll('Deepnectar@1612@');
     ok('credentials.create called SYNCHRONOUSLY inside enroll()', flags().createSyncSeen === true);
+    ok('create options carry NO WebAuthn extensions (largeBlob fix)', flags().noExtensions === true);
     await pEnroll;
     const pUnlock = B.unlock();
     ok('credentials.get called SYNCHRONOUSLY inside unlock()', flags().getSyncSeen === true);

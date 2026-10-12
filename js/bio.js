@@ -56,11 +56,11 @@
    ============================================================ */
 'use strict';
 (function () {
-  var VERSION = '4.21';
+  var VERSION = '4.23';
   var VKEY = 'dhContract.bio.v';
   var BLOB = 'dhContract.bio.blob.v' + VERSION;
-  var STALE_KEYS = ['dhContract.bio.blob.v1', 'dhContract.bio.blob.v4.16', 'dhContract.bio.blob.v4.17', 'dhContract.bio.blob.v4.19', 'dhContract.bio.blob.v4.20'];   // older incompatible formats
-  var IDB_NAME = 'dh-bio-v421', IDB_STORE = 'keys';      // fresh store: old-version envelopes are unreadable by design
+  var STALE_KEYS = ['dhContract.bio.blob.v1', 'dhContract.bio.blob.v4.16', 'dhContract.bio.blob.v4.17', 'dhContract.bio.blob.v4.19', 'dhContract.bio.blob.v4.20', 'dhContract.bio.blob.v4.21'];   // older incompatible formats
+  var IDB_NAME = 'dh-bio-v423', IDB_STORE = 'keys';      // fresh store: old-version envelopes are unreadable by design
 
   /* ---------- user gesture (v4.21 DH — guard DELETED on purpose) ----------
      v4.20 added a "fresh tap" pre-check that rejected enroll()/unlock() with
@@ -100,16 +100,6 @@
     if (IS_IOS) return 'Face ID';
     return 'Face / Fingerprint';
   }
-  /* WebAuthn large-blob extension availability by platform version:
-     iOS/iPadOS 15+ yes, below no; Android & desktop Chrome 98+ yes (we let
-     them try — requestOptions degrades silently if the authnr ignores it). */
-  function bioExtSupported() {
-    if (!IS_IOS) return true;
-    var m = ua.match(/(?:iPhone OS|CPU OS) (\d+)[._](\d+)/);
-    if (m) return parseInt(m[1], 10) >= 15;
-    return true;   // iPadOS desktop UA hides the version — assume modern
-  }
-
   /* ---------- base64url ---------- */
   function b64uEncode(buf) {
     var bytes = new Uint8Array(buf), s = '';
@@ -192,6 +182,7 @@
        to see the offer again after each update. */
     lsDel('dhContract.bio.skip.v4.16');
     lsDel('dhContract.bio.skip.v4.21');
+    lsDel('dhContract.bio.skip.v4.23');
     lsSet(VKEY, VERSION);
   }
   function getBlob() {
@@ -286,7 +277,7 @@
   }
 
   /* ---------- WebAuthn options ---------- */
-  function creationOptions(sealedWrite) {
+  function creationOptions() {
     return {
       publicKey: {
         rp: { name: 'Deep & Honey Contract' },
@@ -312,12 +303,19 @@
           userVerification: 'required'                   /* face/fingerprint mandatory */
         },
         timeout: 60000,
-        attestation: 'none',
-        /* v4.19 DH — only attach the large-blob WRITE extension when this OS
-           plausibly supports it (iOS/iPadOS 15+; Android/Windows are fine).
-           Requesting an unsupported extension made registration THROW on
-           older iPhones — another way "✨ Yes, enable it" did nothing. */
-        extensions: bioExtSupported() ? { largeBlob: { write: sealedWrite, read: false } } : {}
+        attestation: 'none'
+        /* v4.23 DH — THE largeBlob ERROR IS GONE FOREVER. The reported failure
+           "The 'largeBlob' extension's 'read' parameter is only valid when
+           requesting an assertion" was thrown by Chrome/Samsung Internet
+           because we attached `largeBlob:{write:…, read:false}` to the
+           REGISTRATION options — and per the WebAuthn L1 spec the `read` key
+           is illegal in a credentialCreationOptions extension map (it is only
+           valid during get()). Some engines also reject ANY largeBlob request
+           at creation outright. So enrolment now sends NO extensions at all:
+           plain, boring, universally-supported create() options. Security is
+           unchanged — the biometric gate is the ceremony itself
+           (userVerification:'required') plus the device-bound IndexedDB
+           envelope; the ticket never needs to live inside the authenticator. */
       }
     };
   }
@@ -329,31 +327,12 @@
         /* v4.17 DH — no authenticatorAttachment hint here either (see above);
            the credential id already pins the ceremony to this device's key. */
         userVerification: 'required',
-        timeout: 60000,
-        extensions: bioExtSupported() ? { largeBlob: { read: true } } : {}
+        timeout: 60000
+        /* v4.23 DH — NO largeBlob READ requested anymore (see enroll note):
+           the unlock path reads the mirrored ticket from localStorage and
+           decrypts the local envelope after the ceremony passes. */
       }
     };
-  }
-
-  /* ---------- read the large-blob value out of an assertion response ---------- */
-  function largeBlobFromAssertion(assertion) {
-    try {
-      var resp = assertion.response;
-      /* modern API: AuthenticationExtensionsLargeBlobOutputs.read() */
-      if (resp.getLargeBlob) {
-        var direct = resp.getLargeBlob();
-        if (direct && direct.byteLength >= 12) return new Uint8Array(direct);
-      }
-      /* legacy path: extension CBOR map appended to authenticator data */
-      var ad = resp.getAuthenticatorData ? new Uint8Array(resp.getAuthenticatorData()) : null;
-      if (!ad || ad.length <= 37) return null;
-      var tail = ad.subarray(parseAuthData(ad).extStart);
-      if (!tail.length) return null;
-      var m = cborDecodeMap(tail);
-      var val = m && m['largeBlob'];
-      if (val instanceof Uint8Array && val.length >= 12) return val;
-      return null;
-    } catch (e) { return null; }
   }
 
   /* ---------- path B helpers (v4.17) ---------- */
@@ -374,33 +353,23 @@
   /* ---------- shared envelope fields ---------- */
   var IV_LEN = 12;
 
-  /* ---------- enrolment (v4.20 DH — gesture-safe rewrite) ----------
+  /* ---------- enrolment (v4.23 DH — largeBlob removed entirely) ----------
      v4.19 DH made Face ID work by ditching blob-READ/COSE-verify on iOS:
-     a one-time random 32-byte UNLOCK TICKET is written into the
-     authenticator via the large-blob WRITE extension AND mirrored in an
-     IndexedDB envelope encrypted with SHA-256(ticket ‖ pepper).
-     v4.20 DH adds the piece that actually makes the BUTTON respond:
-     navigator.credentials.create() is now called SYNCHRONOUSLY on the
-     first line of enroll(), straight from the click handler's task — no
-     awaits before it. Previously the async platform probe + IndexedDB +
-     WebCrypto steps sat between the tap and the WebAuthn call, the
-     transient user activation expired, and the browser killed the
-     ceremony with NotAllowedError before the Face-ID sheet ever showed.
-     All encryption happens AFTER the ceremony resolves; the ticket is
-     returned to us via clientDataJSON.typeInfo.extension.largeBlob.write
-     (or our local mirror as a last resort). */
-  var ENVELOPE_KEY = 'envelope.v4.21';
-  function extractWrittenTicket(credential) {
-    /* Best-effort read of the bytes the authenticator accepted for our
-       largeBlob.write request, out of the attestation's clientDataJSON. */
-    try {
-      var cdj = new TextDecoder().decode(new Uint8Array(credential.response.getClientDataJSON()));
-      var cd = JSON.parse(cdj);
-      var b = cd && cd.typeInfo && cd.typeInfo.extension && cd.typeInfo.extension.largeBlob && cd.typeInfo.extension.largeBlob.write;
-      if (typeof b === 'string' && b.length >= 40) return b;   // base64url of the exact bytes we sent
-    } catch (e) { /* not exposed on this browser — fine */ }
-    return null;
-  }
+     a one-time random 32-byte UNLOCK TICKET encrypts an IndexedDB envelope
+     holding the contract secret (keyed with SHA-256(ticket ‖ pepper)).
+     v4.20 DH added the piece that makes the BUTTON respond: credentials.create()
+     is called SYNCHRONOUSLY as the first statement of enroll(), straight from
+     the click handler's task, so the tap is still "fresh" when the browser
+     opens the Face-ID sheet.
+     v4.23 DH REMOVES the large-blob WRITE extension that was still attached to
+     registration options: Chrome & Samsung Internet validate that map strictly
+     and threw "The 'largeBlob' extension's 'read' parameter is only valid when
+     requesting an assertion" before the biometric prompt ever appeared — the
+     exact error users kept seeing when tapping "✨ enable face". Enrolment now
+     sends plain, universally-supported create() options with NO extensions;
+     the ticket lives in the device-local mirror + encrypted envelope instead
+     of inside the authenticator, which every browser supports. */
+  var ENVELOPE_KEY = 'envelope.v4.23';
   function enroll(secret) {
     migrate();
     if (!cryptoOk() || !webauthnAvailable()) return Promise.reject(new Error('unsupported'));
@@ -410,12 +379,17 @@
     var secretStr = String(secret);
     var ticket = randBytes(32);
     var envIv  = randBytes(IV_LEN);
-    /* ⚠ synchronous first statement — preserves the user gesture (see above) */
-    var ceremony = navigator.credentials.create(creationOptions(ticket));
+    /* ⚠ synchronous first statement — preserves the user gesture (see above).
+       v4.23 DH: NO extensions in the options at all — this is exactly what
+       fixes the reported error "The 'largeBlob' extension's 'read' parameter
+       is only valid when requesting an assertion" (Chrome/Samsung Internet
+       validate the creation extension map strictly and rejected our
+       largeBlob:{write, read:false} request BEFORE the Face-ID sheet could
+       appear). A plain create() works on every browser that supports WebAuthn. */
+    var ceremony = navigator.credentials.create(creationOptions());
     return ceremony.then(function (credential) {
       if (!credential) throw new Error('cancelled');
-      var written = extractWrittenTicket(credential);
-      var sealedB64 = written || b64uEncode(ticket);   // prefer authenticator-confirmed bytes
+      var sealedB64 = b64uEncode(ticket);   // device-local mirror releases the envelope
       var parsed = null;
       try { parsed = parseAuthData(credential.response.getAuthenticatorData()); } catch (e) { /* optional fields */ }
       var blob = {
@@ -462,24 +436,18 @@
        to TRY credentials.get — the browser honestly rejects it if there is
        no activation, and the UI then just waits for a real tap. */
     var want = b64uDecode(blob.sealed);             // our ticket bytes
-    /* ⚠ synchronous first statement — preserves the user gesture */
+    /* ⚠ synchronous first statement — preserves the user gesture.
+       v4.23 DH: no largeBlob READ extension (see creationOptions note). */
     var ceremony = navigator.credentials.get(requestOptions(blob.credId));
     return ceremony.then(function (assertion) {
       if (!assertion) throw new Error('cancelled');
-      var lb = largeBlobFromAssertion(assertion);
-      if (lb && lb.length >= 8) {
-        /* device supports blob READ — the authenticator itself handed bytes
-           back AFTER verifying the biometric. Verify them byte-for-byte
-           against our mirrored ticket; a match is cryptographic proof the
-           ceremony ran on this credential. */
-        var same = (lb.length === want.length);
-        if (same) { for (var i = 0; i < lb.length; i++) { if (lb[i] !== want[i]) { same = false; break; } } }
-        if (!same) {
-          /* readable but NOT our ticket → something is off; refuse rather
-             than release the envelope from a foreign/tampered blob. */
-          throw new Error('seal-mismatch');
-        }
-      }
+      /* v4.23 DH — the mere RESOLUTION of this ceremony is the biometric gate:
+         browsers refuse to hand back an assertion unless the OS
+         face/fingerprint ceremony passed with userVerification:'required' on
+         THIS credential id (allowCredentials pins it). The old optional
+         largeBlob byte-match fast path is removed together with the extension
+         itself — nothing requests or reads a blob anymore, so no browser can
+         ever complain about largeBlob again. */
       return idbGet(ENVELOPE_KEY).catch(function () { return null; }).then(function (env) {
         if (!env || !env.ct) {                 /* envelope lost (site data cleared) → honest reset */
           disable();

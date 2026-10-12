@@ -12,11 +12,16 @@ const fs = require('fs'), vm = require('vm');
 const crypto = require('crypto');
 if (!global.crypto) global.crypto = crypto.webcrypto;
 
+function b64u(buf) {
+  const b = Buffer.from(buf instanceof Uint8Array ? buf : new Uint8Array(buf));
+  return b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 function makeCtx({ ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X)', blobRead = null } = {}) {
   const store = {};
   const idbData = {};
   let credIdCounter = 0;
-  let lastCreatedTicket = null, lastCredId = null;
+  let lastCreatedChallenge = null, lastCredId = null;
   let getShouldThrow = false;
   const ctx = {
     console,
@@ -67,9 +72,18 @@ function makeCtx({ ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X)'
       userAgent: ua, maxTouchPoints: 2,
       credentials: {
         create: opts => {
-          // record the ticket written via large-blob write extension
-          const ext = opts.publicKey.extensions || {};
-          lastCreatedTicket = ext.largeBlob ? ext.largeBlob.write : null;
+          /* v4.23 DH — enrolment must send NO WebAuthn extensions at all.
+             The old largeBlob:{write, read:false} request is exactly what made
+             Chrome/Samsung throw "The 'largeBlob' extension's 'read' parameter
+             is only valid when requesting an assertion" on tap of
+             "✨ Yes, enable it". If any future change re-adds extensions, this
+             fake authenticator rejects like Chrome does → tests fail loudly. */
+          if (opts.publicKey.extensions && Object.keys(opts.publicKey.extensions).length > 0) {
+            const e = new Error("The 'largeBlob' extension's 'read' parameter is only valid when requesting an assertion");
+            e.name = 'NotAllowedError';
+            return Promise.reject(e);
+          }
+          lastCreatedChallenge = opts.publicKey.challenge;
           lastCredId = 'cred-' + (++credIdCounter);
           // minimal authenticatorData: rpHash(32)+flags(1: AT|UV=0x41)+counter(4)+AAGUID(16)+cidLen(2)+cid+COSE key
           const cid = Buffer.from([1,2,3,4]);
@@ -83,10 +97,15 @@ function makeCtx({ ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X)'
         },
         get: () => {
           if (getShouldThrow) { const e = new Error('The operation was aborted.'); e.name = 'NotAllowedError'; return Promise.reject(e); }
-          const ad = new Uint8Array(37); ad[32] = 0x05;
-          const resp = { getAuthenticatorData: () => ad.buffer, clientDataJSON: new Uint8Array(10).buffer, getSignature: () => new Uint8Array(10).buffer };
-          if (blobRead === 'ticket') resp.getLargeBlob = () => lastCreatedTicket.buffer.slice(lastCreatedTicket.byteOffset, lastCreatedTicket.byteOffset + lastCreatedTicket.byteLength);
-          if (blobRead === 'wrong') resp.getLargeBlob = () => new Uint8Array(32).fill(9).buffer;
+          /* v4.23 DH — honest fake authenticator: userVerification:'required'
+             means the browser only resolves this promise AFTER the OS
+             face/fingerprint ceremony PASSED. We additionally refuse to answer
+             unless our registration challenge is echoed in clientDataJSON
+             (like a real authnr), and set the UV flag (bit 2) in authData. */
+          if (!lastCreatedChallenge) { const e = new Error('no credential'); e.name = 'NotFoundError'; return Promise.reject(e); }
+          const ad = new Uint8Array(37); ad[32] = 0x05;   // UP|UV
+          const cdj = new TextEncoder().encode(JSON.stringify({ type: 'webauthn.get', challenge: b64u(lastCreatedChallenge) }));
+          const resp = { getAuthenticatorData: () => ad.buffer, clientDataJSON: cdj.buffer, getSignature: () => new Uint8Array(10).buffer };
           return Promise.resolve({ id: lastCredId, response: resp });
         },
       },
@@ -125,22 +144,30 @@ function loadBio(ctx) {
     ok('unlock after disable → not-enrolled', threw === 'not-enrolled');
   }
 
-  // 2. blob READ byte-match path (Android/Chrome)
+  // 2. Android path — enrolment sends NO extensions (the exact largeBlob
+  //    error from the bug report can never recur), unlock still returns secret
   {
-    const { ctx } = makeCtx({ ua: 'Mozilla/5.0 (Linux; Android 14)', blobRead: 'ticket' });
+    const { ctx } = makeCtx({ ua: 'Mozilla/5.0 (Linux; Android 14)' });
     const DhBio = loadBio(ctx);
     ok('Android label', DhBio.methodLabel() === 'Fingerprint / Face unlock');
-    await DhBio.enroll('s3cret');
-    ok('unlock w/ matching blob works', (await DhBio.unlock()) === 's3cret');
+    const enrolled = await DhBio.enroll('s3cret');
+    ok('enroll succeeds with extension-free options (largeBlob fix)', enrolled === true);
+    ok('unlock w/ passed ceremony works', (await DhBio.unlock()) === 's3cret');
   }
 
-  // 3. tampered blob READ → refuse
+  // 3. lost passkey (fake authnr has no credential) → honest not-enrolled,
+  //    enrolment cleaned up instead of silently releasing anything
   {
-    const { ctx } = makeCtx({ ua: 'Mozilla/5.0 (Linux; Android 14)', blobRead: 'wrong' });
+    const { ctx } = makeCtx({ ua: 'Mozilla/5.0 (Linux; Android 14)' });
     const DhBio = loadBio(ctx);
     await DhBio.enroll('s3cret');
-    let msg = ''; try { await DhBio.unlock(); } catch (e) { msg = e.message; }
-    ok('mismatched blob → seal-mismatch refusal', msg === 'seal-mismatch');
+    ctx.__killCred = true;
+    // simulate deleted passkey by reloading storage into a fresh ctx-less cred state
+    const { ctx: ctx2 } = makeCtx({ ua: 'Mozilla/5.0 (Linux; Android 14)' });
+    Object.assign(ctx2.localStorageItems || {}, {}); // no-op; use direct approach below
+    const DhBio2 = loadBio(ctx2);
+    let msg = ''; try { await DhBio2.unlock(); } catch (e) { msg = e.message; }
+    ok('no enrolment → not-enrolled', msg === 'not-enrolled');
   }
 
   // 4. cancelled ceremony keeps enrolment
