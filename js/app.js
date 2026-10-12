@@ -381,20 +381,51 @@
 
   /* ---------- collapse state (▾/▸ per day) ---------- */
   const collapsedOverride = new Map();               // manual ▾/▸ choice per page id
+  /* v4.26 DH — a saved day page carries its last collapse choice in the markup
+     itself (data-collapsed="1" baked in by persistDays' outerHTML snapshot), so
+     after a reload / cloud restore the ▾/▸ state comes back exactly as chosen. */
   const isCollapsed = page => {
     const o = collapsedOverride.get(page.id);
     if (o !== undefined) return o;
+    if (page.hasAttribute && page.hasAttribute('data-collapsed')) return true;
     return dayLocked(page);                          // finished days collapse by default
+  };
+  /* v4.26 DH — every day page carries its OWN inline collapse stylesheet:
+       #dayN.day-collapsed > *:not(.page-head):not(.day-finished){display:none}
+     Because it lives INSIDE the section, it travels with the outerHTML snapshot
+     that persistDays() saves to the cloud — so restored days render collapsed on
+     ANY device even if that device still has a stale cached styles.css (the #id
+     selector also beats any older .page rules by specificity). */
+  const ensureCollapseStyle = page => {
+    if (!page || !page.id) return;
+    let st = page.querySelector(':scope > style[data-collapse-style]');
+    if (!st) {
+      st = document.createElement('style');
+      st.setAttribute('data-collapse-style', '');
+      page.insertBefore(st, page.firstChild);
+    }
+    st.textContent =
+      `#${page.id}.day-collapsed>*:not(.page-head):not(.day-finished){display:none!important}` +
+      `@media print{#${page.id}.day-collapsed>*{display:block!important}#${page.id}.day-collapsed>table{display:table!important}}`;
   };
   const applyCollapse = page => {
     /* v3.6 DH FIX: the stylesheet hides collapsed content via .page.day-collapsed
        (see css/styles.css line ~250) — the old code toggled a bare ".collapsed"
        class that has no rules, so ▾ Collapse / ▸ Expand did nothing visible. */
-    page.classList.toggle('day-collapsed', isCollapsed(page));
+    const col = isCollapsed(page);
+    ensureCollapseStyle(page);                       // inline rule travels with the saved HTML
+    page.classList.toggle('day-collapsed', col);
+    /* v4.26 DH — mirror the state into an attribute too: attributes live inside
+       outerHTML, so persistDays() carries the exact collapse choice to the cloud
+       and back (a plain class change would be lost on restore). The attribute is
+       purely informational here — display is driven by the class + CSS rules. */
+    if (col) page.setAttribute('data-collapsed', '1');
+    else page.removeAttribute('data-collapsed');
     const btn = $('.collapse-toggle', page);
     if (btn) {
-      btn.textContent = isCollapsed(page) ? '▸ Expand' : '▾ Collapse';
-      btn.title = isCollapsed(page) ? 'Show this day’s contents' : 'Hide this day’s contents';
+      btn.textContent = col ? '▸ Expand' : '▾ Collapse';
+      btn.title = col ? 'Show this day’s contents' : 'Hide this day’s contents';
+      btn.setAttribute('aria-expanded', col ? 'false' : 'true');
     }
   };
 
@@ -1110,6 +1141,21 @@
        snapshot) before it can be re-attached. This is what makes a deletion
        permanent across reloads, re-logins and both phones. */
     if (list) list = pruneDeleted(list);
+    /* v4.26 DH — merge saved collapse choices into the in-memory override map so
+       a manual ▸ Expand on a FINISHED day survives reloads (the data-collapsed
+       attribute alone can't express "expanded", and the day-locked default would
+       otherwise re-collapse it). */
+    if (list) list.forEach(d => {
+      if (!d || !d.id || !d.html) return;
+      try {
+        const m = String(d.html).match(/^<section[^>]*\bid="([^"]+)"[^>]*>/i) || String(d.html).match(/\bid="(day\d+)"[^>]*>/i);
+        const id = m && m[1];
+        if (!id) return;
+        const head = String(d.html).slice(0, 400);
+        if (/data-collapsed\s*=/i.test(head)) collapsedOverride.set(id, true);
+        else if (/class="[^"]*\bpage\b[^"]*"/i.test(head) && !/day-collapsed/i.test(head)) collapsedOverride.set(id, false);
+      } catch { /* ignore malformed snapshot */ }
+    });
     if (list) {
       /* v4.0 DH — cloud/local list is the source of truth: any day page that
          no longer appears in it was explicitly deleted on some device, so drop
@@ -1994,10 +2040,34 @@
     if (!sel) return;
     page.classList.toggle('day-finished-on', dayLocked(page));
   };
+  /* v4.26 DH FIX — syncLockUI now ALSO applies the collapse state, so EVERY day
+     (Day 1 included, plus every AI-created / ➕ blank / cloud-restored day)
+     collapses automatically the moment it is marked "✅ Yes, finished" and
+     expands again when set back to ❌ No. Previously only Day 1's static change
+     listener collapsed; restored/created days ran through this function without
+     ever getting the .day-collapsed class, so nothing visibly happened. */
   const syncLockUI = page => {
     page.classList.toggle('day-locked', dayLocked(page));
     styleSwitch(page);
+    applyCollapse(page);
   };
+  /* delegated change listener — covers EVERY .day-finished-select in the DOM,
+     including days restored from the cloud or created after boot (the old
+     one-time $$().forEach() wiring only caught selects that existed at script
+     load time, which is why marking a later day finished did nothing). */
+  document.addEventListener('change', e => {
+    const sel = e.target.closest && e.target.closest('.day-finished-select');
+    if (!sel) return;
+    const page = sel.closest('.page');
+    if (!page) return;
+    collapsedOverride.delete(page.id);   // fresh choice re-derives the collapse
+    syncLockUI(page);
+    writeStore();
+    persistDays();                       // the finished flag rides along in the saved HTML → syncs everywhere
+    toast(dayLocked(page)
+      ? `🔒 ${sel.dataset.day.toUpperCase()} marked finished — sealed & collapsed. Tap ▸ Expand to peek inside ♥`
+      : `🔓 ${sel.dataset.day.toUpperCase()} is open again — expanded, every sign and field is editable.`);
+  });
   const syncAllLocks = () => $$('.page').forEach(syncLockUI);
   /* wire the ▾/▸ buttons (static markup + event delegation → AI days too) */
   document.addEventListener('click', e => {
@@ -2007,18 +2077,12 @@
     if (!page) return;
     collapsedOverride.set(page.id, !isCollapsed(page));
     applyCollapse(page);
+    writeStore();
+    persistDays();                       // manual ▾/▸ choice survives reload & syncs too
   });
-  $$('.day-finished-select').forEach(sel => {
-    sel.addEventListener('change', () => {
-      const page = sel.closest('.page');
-      collapsedOverride.delete(page.id);   // v2.0 DH — fresh choice re-derives the collapse
-      syncLockUI(page);
-      writeStore();
-      toast(dayLocked(page)
-        ? `🔒 ${sel.dataset.day.toUpperCase()} marked finished — sealed & collapsed. Tap ▸ Expand to peek inside ♥`
-        : `🔓 ${sel.dataset.day.toUpperCase()} is open again — expanded, every sign and field is editable.`);
-    });
-  });
+  /* (the old one-time $$('.day-finished-select') wiring is replaced by the
+     delegated 'change' listener above — it now covers Day 1 AND every day
+     restored from the cloud or created later.) */
   /* guard: clicks on accept-buttons / filled signature slots inside a locked day.
      Signed/Undo buttons (.undoable) stay live — Accept is undoable in the day
      section even after the day is marked finished. */
@@ -2505,6 +2569,12 @@
 
   const dayPageHTML = p => {
     const N = p.n, low = 'd' + N;
+    /* v4.26 DH — the collapse state is rendered INSIDE the page itself: a
+       data-collapsed attribute (kept in sync by applyCollapse) plus an inline
+       <style> block injected into the section (see ensureCollapseStyle). Both
+       travel inside the saved/copied outerHTML snapshot → every device and
+       every reload shows the day collapsed/expanded exactly as chosen, even if
+       this build's external CSS cache is stale. */
     const acts = p.blank
       ? `<tr><td><em>(to be written)</em></td><td><input class="inline-input editable-field" style="width:100%" placeholder="Add activity / implement…"></td></tr>`
       : p.seqs.map(k => `<tr><td>${escH(SEQ_LIB[k].name)}</td><td>${escH(SEQ_LIB[k].toy)}</td></tr>`).join('');
@@ -2663,6 +2733,11 @@
        Pre-Scene Execution Affidavit values come back from Supabase.
        Called on create / delete / wipe / AI-write / Save. */
     if (!window.CloudStore) return;
+    /* v4.26 DH — refresh every page's INLINE collapse stylesheet before the
+       snapshot: the rule `#dayN.day-collapsed>*:not(.page-head):not(.day-finished){display:none}`
+       travels inside outerHTML → saved days restore collapsed/expanded exactly
+       as chosen even on devices with a stale cached styles.css. */
+    try { $$('.page').forEach(p => ensureCollapseStyle(p)); } catch { /* ignore */ }
     /* v4.13 DH — stamp every field with its permanent identity token BEFORE the
        outerHTML snapshot is taken, so the stamps ride along inside the saved/copied
        day markup. The other phone restores the SAME tokens → the same sentence lands
@@ -2736,14 +2811,9 @@
     try { window.dhLogbookRefreshDom && window.dhLogbookRefreshDom(); } catch { /* ignore */ }
     const clearBtn = $('.clear-day-btn', page);
     if (clearBtn) clearBtn.addEventListener('click', () => clearDay(clearBtn));
-    const dfSel = $('.day-finished-select', page);
-    if (dfSel) dfSel.addEventListener('change', () => {
-      syncLockUI(page);
-      writeStore();
-      toast(dayLocked(page)
-        ? `🔒 ${page.id.toUpperCase()} marked finished — signatures & fields are sealed.`
-        : `🔓 ${page.id.toUpperCase()} is open again — every sign and field is editable.`);
-    });
+    /* v4.26 DH — the "Day finished" select needs NO per-page listener any more:
+       one delegated 'change' listener (see DAY LOCK section) handles every day,
+       applies the lock AND collapses/expands the page automatically. */
   };
 
   /* ---------- "write into day": fill Article 3 table of an open day ---------- */
