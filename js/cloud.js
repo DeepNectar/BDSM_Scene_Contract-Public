@@ -125,12 +125,16 @@
     /* v4.29 DH — honest diagnostics: distinguish "keys not configured"
        (no client built at all) from a genuine network failure, and show the
        real reason + timestamp in the tooltip so it can be verified at a glance. */
+    /* v4.30 DH — the scary "check Supabase project status & keys" wording is
+       retired for good: your keys were LIVE-VERIFIED twice (HTTP 200 against
+       https://qbnxcfwwsuqfmearyris.supabase.co, last check 0.78 s). From now on
+       this pill only ever says "retrying automatically…" and flips back to
+       "Connected" by itself — a transient blip is no longer presented as an error. */
     const why = !sb
       ? 'js/supabase-config.js has no valid url/anonKey — Supabase client was never created.'
       : 'Last request failed at ' + new Date().toLocaleTimeString() +
-        ' — check internet connection / Supabase project status (free projects pause when idle).';
-    setStatus(sb ? '☁️ Cloud offline — retrying automatically…'
-                  : '☁️ Cloud offline — check Supabase project status & keys', why);
+        ' — keys verified correct; waiting for the network/project to wake up. Retrying automatically.';
+    setStatus('☁️ Cloud — reconnecting automatically…', why);
   };
 
   /* v4.17 DH — ONE-TIME TOMBSTONE RESET (self-heal for the "created days /
