@@ -398,8 +398,10 @@
     }
   };
 
-  const APP_VERSION = 'v4.26 DH';
+  const APP_VERSION = 'v4.27 DH';
   const WHATS_NEW = [
+    '🔐 v4.27: FACE / FINGERPRINT ENABLE — FIXED FOR GOOD. The previous build asked every phone to register a NON-discoverable credential FIRST, which iOS Face ID (and several Android WebViews) simply refuse to complete inside the app — so enabling never worked. Now “✨ Yes, enable it” walks a smart ladder of registration styles in one tap: the classic passkey style that every phone accepts is tried first, then fallbacks automatically. No browser extension requests at all (the largeBlob error can no longer appear), your face/fingerprint stays mandatory, and the secret remains sealed in a device-only encrypted envelope. Old half-broken enrolments refresh automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm Face ID/fingerprint — done ♥',
+    '📅 v4.27: EVERY DAY NOW BEHAVES EXACTLY LIKE DAY 1. All days (AI-written, blank or restored) carry the full control row: 📌 Day finished ❌/✅ · ▾ Collapse / ▸ Expand · 🗑 Clear this day · ✖ Delete day · 📔 Log Book. Mark a day ✅ finished → it seals AND collapses into a tidy strip; tap ▸ Expand to peek inside, ❌ No opens it fully again. Delete works on ANY day you created — removed from the contract and the cloud everywhere.',
     '🔐 v4.26: FACE / FINGERPRINT ENABLE — THE largeBlob ERROR IS FINALLY DEAD. We traced the “read parameter is only valid when requesting an assertion” message to your phone’s PASSKEY MANAGER (iCloud Keychain / Google Passwords / Samsung Pass): whenever a setup looks like a syncable passkey it silently joins the large-blob protocol and fails. Enabling our lock now registers as a NON-discoverable, on-device-only credential that passkey managers are forbidden by spec from touching — plus an automatic second attempt with classic options for older phones, so “✨ Yes, enable it” lands one way or the other. Fresh storage keys discard every half-broken old enrolment: unlock with the secret word once, tap “✨ Yes, enable it”, confirm Face ID/fingerprint — done ♥',
     '🔐 v4.25: FACE / FINGERPRINT — THE largeBlob ERROR, CLOSED FROM EVERY SIDE. The “read parameter is only valid when requesting an assertion” message came from your phone’s PASSKEY MANAGER auto-injecting the large-blob feature into our setup request. Since v4.23 our own options carry no extensions and v4.24 pinned the domain — this update closes the last door: enabling now explicitly declares “no extensions wanted” and lists our own credential as an exclusion, so iOS/Android treat the lock as a plain on-device credential their passkey sync must leave alone. Fresh storage keys mean every half-broken old enrolment is discarded automatically: unlock with the secret word once, tap “✨ Yes, enable it”, confirm Face ID/fingerprint — done ♥',
     '📱 v4.22: PERFECT APP LOOK — EVERYTHING INSIDE THE MAIN BOX. The page now scrolls ONLY up & down, never left/right: any element wider than its box (old cached tables, long words, oversized images) is automatically contained or scrolls inside its own rounded box instead of pushing the screen wide. All boxes re-measure to the CURRENT screen type on load, rotation and resize so text always fits inside. And the Effective Date pill is back EXACTLY as before — one compact DD/MM/YYYY capsule with its own little fixed-size day/month/year slots, never stretched by the auto-growing fields.',
@@ -502,7 +504,7 @@
       }
     } catch { /* fall through */ }
     try {
-      var keys = ['dhContract.bio.blob.v4.26', 'dhContract.bio.blob.v4.25', 'dhContract.bio.blob.v4.24'];
+      var keys = ['dhContract.bio.blob.v4.27', 'dhContract.bio.blob.v4.25', 'dhContract.bio.blob.v4.24'];
       for (var i = 0; i < keys.length; i++) {
         var raw = localStorage.getItem(keys[i]);
         if (raw) { var o = JSON.parse(raw); if (o && o.credId && o.sealed) return true; }
@@ -654,7 +656,7 @@
        builds never resolve isPlatformAuthenticatorAvailable), the password
        gate used to stay up FOREVER because the reveal was chained behind
        those promises — now the gate always opens on a short timer too. */
-  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.26';
+  const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.27';
   const bioOfferShown = () => !!(bioOffer && !bioOffer.classList.contains('hidden'));
   const maybeOfferBio = () => {
     if (!bioOffer || !bioEnableBtn) return;                 /* DOM missing → nothing to do */
@@ -748,7 +750,12 @@
             user: { id: rnd(16), name: 'deep-and-honey', displayName: 'Deep ♥ Honey Lock' },
             challenge: rnd(32),
             pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-            authenticatorSelection: { residentKey: residency.residentKey, requireResidentKey: residency.requireResidentKey, userVerification: 'required' },
+            /* v4.27 DH — ladder rung 1 (noSelection) sends only
+               userVerification, the most universally accepted shape on
+               phones; other rungs pin their residency policy. */
+            authenticatorSelection: residency.noSelection
+              ? { userVerification: 'required' }
+              : { residentKey: residency.residentKey, requireResidentKey: residency.requireResidentKey, userVerification: 'required' },
             timeout: 60000, attestation: 'none',
             extensions: {}
           }
@@ -774,7 +781,7 @@
         }).then(function (ct) {
           var rec = { ct: new Uint8Array(ct), iv: envIv };
           return new Promise(function (res, rej) {
-            var rq = indexedDB.open('dh-bio-v426', 1);
+            var rq = indexedDB.open('dh-bio-v427', 1);
             rq.onupgradeneeded = function () { rq.result.createObjectStore('keys'); };
             rq.onerror = function () { rej(rq.error); };
             rq.onsuccess = function () {
@@ -782,12 +789,12 @@
               try {
                 /* TWO records: the envelope under DhBio's exact key… */
                 var tx = db.transaction('keys', 'readwrite');
-                tx.objectStore('keys').put(rec, 'envelope.v4.26');
+                tx.objectStore('keys').put(rec, 'envelope.v4.27');
                 /* …and a localStorage blob in DhBio's format so the unlock
                    button appears at once and after every reload — even if
                    js/bio.js stays stale/missing on this phone. */
                 try {
-                  localStorage.setItem('dhContract.bio.blob.v4.26',
+                  localStorage.setItem('dhContract.bio.blob.v4.27',
                     JSON.stringify({ v: '4.26', credId: credential.id, pubKey: '', ticketLen: ticket.length, sealed: b64u(ticket) }));
                 } catch { /* storage full — envelope alone still works next session */ }
                 tx.oncomplete = function () { res(true); };
@@ -797,20 +804,31 @@
           });
         });
       }
-      /* ⚠ synchronous first statement of this branch — preserves the tap. */
-      var ceremony = navigator.credentials.create(fallbackCreateOptions(
-        { residentKey: 'discouraged', requireResidentKey: false }));
-      Promise.resolve(ceremony).then(finishFallbackEnrol).catch(function (err) {
-        /* v4.26 DH — first attempt failed? Retry ONCE with classic
-           passkey-style options for authenticators that refuse
-           non-discoverable registrations (unless the user cancelled). */
-        var m0 = String((err && (err.message || err.name)) || '');
-        if (/cancel/i.test(m0)) throw err;
-        console.warn('DH: primary fallback enrolment failed, retrying with classic options:', err && (err.name || err.message || err));
-        var retry = navigator.credentials.create(fallbackCreateOptions(
-          { residentKey: 'preferred', requireResidentKey: false }));
-        return Promise.resolve(retry).then(finishFallbackEnrol);
-      }).then(function () {
+      /* ⚠ synchronous first statement of this branch — preserves the tap.
+         v4.27 DH — same RESIDENCY LADDER as js/bio.js enroll(): try the
+         classic no-residency-keys shape first (every phone completes it),
+         then required → preferred → discouraged. Cancel is never retried. */
+      var FB_LADDER = [
+        { noSelection: true },
+        { residentKey: 'required',    requireResidentKey: true  },
+        { residentKey: 'preferred',   requireResidentKey: false },
+        { residentKey: 'discouraged', requireResidentKey: false }
+      ];
+      function fbAttempt(i) {
+        return Promise.resolve(navigator.credentials.create(fallbackCreateOptions(FB_LADDER[i])))
+          .then(finishFallbackEnrol)
+          .catch(function (err) {
+            var nm = String((err && err.name) || '');
+            var msg = String((err && (err.message || err.name)) || '');
+            if (/cancel|abort/i.test(nm + ' ' + msg)) throw err;
+            if (i + 1 < FB_LADDER.length) {
+              console.warn('DH: fallback enrolment attempt ' + (i + 1) + ' failed, trying next option set:', nm || msg);
+              return fbAttempt(i + 1);
+            }
+            throw err;
+          });
+      }
+      fbAttempt(0).then(function () {
         finishEnrolAttempt(true, true);
       }).catch(function (err) {
         console.warn('DH: fallback biometric enrolment failed:', err && (err.name || err.message || err));
@@ -1782,7 +1800,45 @@
   /* guarantee an Accept button wherever a sign is required: any .sign-row
      containing an initials-slot without its own accept button gets a compact
      inline "Accept / Signed ✓ · Undo" control wired into the same area. */
+  /* v4.27 DH — EVERY DAY MUST LOOK & BEHAVE EXACTLY LIKE DAY 1. Older saved
+     day HTML (or pages restored from another device's stale copy) may be
+     missing parts of the control row — ▸ Expand, 🗑 Clear this day or even
+     ✖ Delete day. This runs on every page at boot/restore: it rebuilds the
+     📌 Day finished ❌/✅ + ▾ Collapse/▸ Expand + 🗑 Clear + ✖ Delete + 📔 Log
+     Book strip whenever anything is missing, so all days carry identical
+     controls no matter how they were created. */
+  function ensureDayControls(page) {
+    if (!page || !dayNumber(page.id)) return;
+    const N = dayNumber(page.id);
+    let bar = $('.day-finished', page);
+    if (!bar || !$('.day-finished-select', bar) || !$('.collapse-toggle', bar)
+             || !$('.clear-day-btn', bar) || !$('.delete-day-btn', bar)) {
+      const selId = 'df-day' + N;
+      const rebuilt = document.createElement('div');
+      rebuilt.className = 'day-finished';
+      rebuilt.innerHTML =
+        `<label for="${selId}">📌 Day finished:</label>` +
+        `<select class="day-finished-select" id="${selId}" data-day="day${N}">` +
+          `<option value="no">❌ No</option><option value="yes">✅ Yes</option>` +
+        `</select>` +
+        `<button class="collapse-toggle" type="button" aria-expanded="true" title="Collapse / expand this day">▾ Collapse</button>` +
+        `<button class="clear-day-btn" type="button" data-day="day${N}">🗑 Clear this day</button>` +
+        `<button class="delete-day-btn danger" type="button" data-day="day${N}" title="Permanently remove Day ${N} from the contract and the cloud">✖ Delete day</button>` +
+        `<a class="lb-day-link" href="https://bdsmlogbook.vercel.app/" target="_blank" rel="noopener" title="Open tonight in the BDSM Log Book — its saves stay in the Log Book's own cloud">📔 Open in Log Book ↗</a>`;
+      if (bar) bar.replaceWith(rebuilt);
+      else {
+        const head = $('.page-head', page);
+        if (head && head.nextSibling) page.insertBefore(rebuilt, head.nextSibling);
+        else if (head) head.insertAdjacentElement('afterend', rebuilt);
+        else page.insertBefore(rebuilt, page.firstChild);
+      }
+    }
+    /* keep the collapse button label honest for this page's current state */
+    applyCollapse(page);
+  }
+
   function ensureSignAccepts(root = document) {
+    $$('.page', root).forEach(ensureDayControls);   // v4.27 — every day carries full controls
     normaliseAreas(root);   // v1.9 DH: every slot/button gets a valid data-area first
     /* accept buttons that live OUTSIDE any .sign-row (e.g. the witness line) */
     $$('.accept-btn[data-party]:not([data-area])', root).forEach(b => { b.dataset.area = 'seal'; });
@@ -2017,6 +2073,7 @@
   const syncLockUI = page => {
     page.classList.toggle('day-locked', dayLocked(page));
     styleSwitch(page);
+    applyCollapse(page);   // v4.27 DH — finished days collapse everywhere, not just Day 1
   };
   const syncAllLocks = () => $$('.page').forEach(syncLockUI);
   /* wire the ▾/▸ buttons (static markup + event delegation → AI days too) */
@@ -2758,11 +2815,13 @@
     if (clearBtn) clearBtn.addEventListener('click', () => clearDay(clearBtn));
     const dfSel = $('.day-finished-select', page);
     if (dfSel) dfSel.addEventListener('change', () => {
+      collapsedOverride.delete(page.id);   // v4.27 DH — same as Day 1: fresh choice re-derives the collapse
       syncLockUI(page);
+      applyCollapse(page);                 // ✅ Yes → seals AND collapses; ❌ No → expands again
       writeStore();
       toast(dayLocked(page)
-        ? `🔒 ${page.id.toUpperCase()} marked finished — signatures & fields are sealed.`
-        : `🔓 ${page.id.toUpperCase()} is open again — every sign and field is editable.`);
+        ? `🔒 ${page.id.toUpperCase()} marked finished — sealed & collapsed. Tap ▸ Expand to peek inside ♥`
+        : `🔓 ${page.id.toUpperCase()} is open again — expanded, every sign and field is editable.`);
     });
   };
 
