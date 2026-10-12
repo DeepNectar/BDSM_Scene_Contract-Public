@@ -254,8 +254,15 @@
      replay, which ABORTED day restoration right after re-login. Guard it:
      width measurement is cosmetic; data restore must never depend on it. */
   const mctx = (() => { try { return measureCanvas.getContext('2d'); } catch { return null; } })();
+  /* v4.22 DH — mark every DD/MM/YYYY (and HH:MM) pill input so the
+     auto-grow below skips them and they keep their exact previous
+     compact size ("make the date as previous"). Runs on boot and after
+     any DOM change (AI days, day restore, log-book edits). */
+  const tagDatePills = () => {
+    $$('.datetime-group input[type=text], .time-group input[type=text]').forEach(inp => { inp.dataset.pill = '1'; });
+  };
   const growInput = inp => {
-    if (!inp || inp.dataset.pill === '1') return;             // DD/MM/YYYY pills keep fixed size
+    if (!inp || inp.dataset.pill === '1' || (inp.closest && inp.closest('.datetime-group, .time-group'))) return; // DD/MM/YYYY pills keep fixed size
     const min = parseFloat(getComputedStyle(inp).minWidth) || 70;
     const max = parseFloat(inp.dataset.growMax || '340');
     let w = max;
@@ -291,6 +298,7 @@
      (called on load and on resize/orientationchange so boxes always adjust
      to the type of screen) */
   const fitAllBoxes = () => {
+    tagDatePills();                                   // date pills keep their exact previous size
     growInputsIn(document);
     $$('textarea').forEach(ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
   };
@@ -303,6 +311,46 @@
   };
   window.addEventListener('resize', scheduleFitAllBoxes);
   window.addEventListener('orientationchange', scheduleFitAllBoxes);
+
+  /* v4.22 DH — APP-STYLE, VERTICAL-ONLY SCROLLING: no element may ever
+     create sideways motion on the page. Anything wider than its box
+     (an old cached table, a long unbreakable string, an oversized image)
+     becomes scrollable INSIDE its own rounded box instead of pushing the
+     document wide. Runs on boot and after every DOM change so AI-created
+     days and restored content are covered too. */
+  const enforceVerticalOnly = () => {
+    try {
+      const de = document.documentElement;
+      const cap = Math.max(de.clientWidth || 0, window.innerWidth || 0);
+      if (!cap) return;
+      $$('body *').forEach(el => {
+        if (el === document.body || !el.parentElement) return;
+        /* tables already live inside .table-scroll wrappers (wrapTables) */
+        if (el.classList && el.classList.contains('table-scroll')) { el.style.overflowX = 'auto'; return; }
+        if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0 &&
+            !(el.classList && el.classList.contains('datetime-group'))) {
+          const disp = getComputedStyle(el).display;
+          if (disp !== 'inline' && disp !== 'none') {
+            el.style.overflowX = 'auto';
+            el.style.maxWidth = '100%';
+          }
+        }
+      });
+      /* last-resort hard clamp: the document itself can never exceed the screen */
+      document.body.style.maxWidth = cap + 'px';
+      document.body.style.overflowX = 'hidden';
+    } catch { /* cosmetic guard only — never break the app */ }
+  };
+  const moVertical = new MutationObserver(() => scheduleFitAllBoxes());
+  const startVerticalGuard = () => {
+    try {
+      enforceVerticalOnly();
+      tagDatePills();
+      moVertical.observe(document.getElementById('main-contract') || document.body,
+        { childList: true, subtree: true });
+    } catch { /* ignore */ }
+  };
+  window.dhEnforceVerticalOnly = enforceVerticalOnly;
 
   /* ---------- device helpers with safe fallbacks ----------
      js/device.js defines window.isPhone / downloadBlob / DHDevice, but it is not
@@ -350,8 +398,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.21 DH';
+  const APP_VERSION = 'v4.22 DH';
   const WHATS_NEW = [
+    '📱 v4.22: PERFECT APP LOOK — EVERYTHING INSIDE THE MAIN BOX. The page now scrolls ONLY up & down, never left/right: any element wider than its box (old cached tables, long words, oversized images) is automatically contained or scrolls inside its own rounded box instead of pushing the screen wide. All boxes re-measure to the CURRENT screen type on load, rotation and resize so text always fits inside. And the Effective Date pill is back EXACTLY as before — one compact DD/MM/YYYY capsule with its own little fixed-size day/month/year slots, never stretched by the auto-growing fields.',
     '🔐 v4.21: FACE / FINGERPRINT — ENABLED WITH ONE TAP, GUARANTEED. Three invisible blockers removed at once: (1) a “fresh tap” pre-check that wrongly refused to start the Face-ID sheet on phones where the browser doesn’t expose the activation API — the check is gone; the browser itself decides, so tapping “✨ Yes, enable it” now ALWAYS brings up your phone’s face/fingerprint prompt instantly; (2) the offer box (“Want to open our contract with your Face ID…”) could be swallowed forever by one accidental “Maybe later” tap or a stale enrolment flag from an older version — it now re-appears after this update and stays until you choose; (3) old half-broken enrolments are cleared automatically, so every phone gets one clean working setup. Unlock button likewise never refuses a tap any more.',
     '🔐 v4.20: FACE / FINGERPRINT BUTTONS — THE FINAL FIX. Found the real reason taps on “✨ Yes, enable it” and “🔓 Unlock with Face / Fingerprint” did NOTHING on phones: browsers only allow a Face-ID/fingerprint ceremony while your tap is still “fresh”, but the old code ran several async steps (capability probe → storage → encryption) BEFORE asking the phone for biometrics — by then the tap had expired and iOS/Android silently killed the ceremony before its sheet ever appeared. Now the biometric prompt starts INSTANTLY on tap (crypto happens after you scan), every failure tells you why in plain words, a lost/deleted passkey automatically re-offers enabling right away, and older enrolments migrate cleanly. If biometrics were enabled before: unlock with the secret word once and tap “✨ Yes, enable it” again.',
     '🔐 v4.19: FACE & FINGERPRINT — THE REAL FIX AT LAST. Earlier attempts still relied on browser features iPhones simply do not provide (reading the sealed blob back / verifying the passkey signature locally), so unlock threw every time and the app hid the button again. The whole flow is rebuilt: enrolment now writes a one-time random UNLOCK TICKET into your phone’s secure passkey (large-blob WRITE — supported on iOS 15+, Android, Windows Hello) and stores our contract secret in a local envelope encrypted with that ticket + a device-only pepper. One successful Face ID / fingerprint scan releases it — no blob READ, no COSE verification needed any more, so it finally works on iPhone Safari too. Also: capability checks are instant & synchronous (a hanging iOS probe used to stall the buttons forever), older iDevices skip the unsupported extension instead of erroring, deleted passkeys are detected cleanly, and every failure now tells you WHY in a toast instead of looking dead. If biometrics were enabled before: tap “✨ Yes, enable it” once after unlocking with the secret word.',
@@ -2771,6 +2820,11 @@
   };
   wrapTables(document);
   window.dhWrapTables = wrapTables;          // exposed so logbook.js can reuse it
+
+  /* v4.22 DH — start the app-style vertical-only guard (date-pill sizing +
+     no sideways page scroll) after tables are wrapped and days restored */
+  startVerticalGuard();
+  setTimeout(startVerticalGuard, 1200);      // belt-and-braces: re-run after late DOM work
 
   /* ---------- keyboard-safe scrolling: a sticky footer bar would sit on top of
      the on-screen keyboard, so on phones we simply scroll the button into view ---------- */
