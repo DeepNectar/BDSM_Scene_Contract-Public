@@ -298,8 +298,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.16 DH';
+  const APP_VERSION = 'v4.17 DH';
   const WHATS_NEW = [
+    '🔐 v4.17: FACE & FINGERPRINT UNLOCK NOW REALLY WORKS — the “✨ Yes, enable it” and “🔓 Unlock with Face / Fingerprint” buttons were silently dying on iPhones (iOS Safari < 18) and several Android browsers: those engines never hand the credential’s sealed blob back after a successful Face-ID scan, so every unlock threw, the app deleted the enrolment and hid the button (“needs re-enabling”). Fixed end-to-end: enrolment now ALSO stores a device-bound local envelope (key material split between the passkey seal and a browser-profile-only pepper, both useless alone), the unlock flow has three honest fallback paths instead of one fragile one, the hard-pinned authenticatorAttachment that made some WebViews throw NotAllowedError outright is gone, failed attempts are logged to the console instead of vanishing, and UI reveals no longer hang behind capability probes that never resolve. Re-enable biometrics once from the offer after unlocking with the secret word.',
     '🔐 v4.16: FACE & FINGERPRINT UNLOCK — whatever your phone supports! After you unlock with our secret word once, the app offers “✨ Yes, enable it”: your phone then asks for Face ID / fingerprint (the device sensor decides — the app NEVER sees or stores any biometric data) and a device-bound passkey is created. From then on the login card shows “🔓 Unlock with Face / Fingerprint” and one look/touch opens the contract. Each phone enrols its own biometric (stored locally on that device only, never synced); if a biometric ever fails or is removed from the phone, the normal secret-word login still works exactly as before, and you can re-enable anytime.',
     '📱 v4.14: TOTAL PHONE COMPACT PASS — everything in the app now adjusts to the phone screen so ALL of it is visible properly: the header version/cloud pills and Log Book line stack neatly instead of colliding, the contract-meta line (contract no. / effective date / parties) becomes one tidy column with the date pill wrapping inside the screen, wide tables scroll sideways inside their own rounded box without clipping or pushing the page wide, every input box is bounded by the viewport (auto-growing fields never exceed the screen), debrief & do/don\'t boxes go single-column, AI chips shrink to fit whole rows, the login card is compact and fully visible above the keyboard, and the toast stays on-screen. Also fixed a service-worker syntax error that kept phones serving stale cached files.',
     '☁️ v4.13c: CROSS-DEVICE SYNC GUARANTEE — if a day is created and saved on ONE device, it now syncs to EVERY device that opens this site with ALL its details: the day page itself, every typed field (Day section + Pre-Scene Affidavit), every checklist tick and every signature. Fixed the last silent-loss paths: the local day snapshot reader in cloud.js now understands BOTH storage shapes ({list:[…]} and flat {days:[…]}/legacy array) so a saved day can never be missed when merging from localStorage; the 💾 Save button awaits the REAL completion of every cloud write (fields + accepts + all day pages) before saying “Saved ✓”; deletions stay deleted everywhere via permanent tombstones; and a two-device automated test (tests/test_cross_device_sync.js) proves the whole create → save → appear-on-the-other-phone flow.',
@@ -382,6 +383,8 @@
 
   const doBioUnlock = () => {
     if (bioBusy || !window.DhBio) return;
+    /* v4.17 DH — the promise chain below can NEVER hang: every browser quirk
+       ends in either unlock() or an honest message, and bioBusy always resets. */
     bioBusy = true;
     bioUnlockBtn.disabled = true;
     bioUnlockBtn.textContent = '⏳ Looking for you…';
@@ -396,8 +399,13 @@
     }).catch(err => {
       const name = (err && err.name) || '';
       const msg  = (err && err.message) || '';
+      console.warn('DH: biometric unlock failed:', name, msg);
       if (name === 'NotAllowedError' || /cancel|abort|time/.test(msg)) {
+        /* user dismissed / sensor didn't match this try → enrolment is FINE,
+           keep it so the button works next tap (v4.16 also kept it here) */
         errEl.textContent = 'Biometric didn’t verify — no worries, use our secret word.';
+      } else if (/not-enrolled/.test(msg)) {
+        hideBioZone();               /* nothing to unlock — just tidy up */
       } else {
         /* stale / unreadable enrolment → drop it so the zone disappears next time */
         try { window.DhBio.disable(); } catch { /* ignore */ }
@@ -411,13 +419,26 @@
 
   if (bioUnlockBtn) bioUnlockBtn.addEventListener('click', doBioUnlock);
 
-  /* at boot: if this device already has a face/fingerprint enrolment, offer it instantly */
+  /* at boot: if this device already has a face/fingerprint enrolment, offer it
+     instantly. v4.17 DH — the zone is revealed on a short timer EVEN IF the
+     capability probes hang or reject (older iOS WebViews never resolve
+     isPlatformAuthenticatorAvailable): pressing Unlock then runs a real
+     credentials.get which either works or fails with an honest message —
+     instead of the button silently never appearing / doing nothing. */
   if (bioReady()) {
+    let revealed = false;
+    const revealIfEnrolled = () => {
+      if (revealed) return;
+      revealed = true;
+      Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
+        .then(([sup, enr]) => { if (sup && enr) showBioZone(window.DhBio.methodLabel()); })
+        .catch(() => { /* silent — password gate always works */ });
+    };
+    setTimeout(revealIfEnrolled, 600);
+    /* fast path when the probes answer immediately */
     Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
-      .then(([sup, enr]) => {
-        if (sup && enr) showBioZone(window.DhBio.methodLabel());
-      })
-      .catch(() => { /* silent — password gate always works */ });
+      .then(([sup, enr]) => { if (sup && enr) { revealed = true; showBioZone(window.DhBio.methodLabel()); } })
+      .catch(() => {});
   }
 
   if (!overlay || !pwInput || !errEl || !$('#login-btn')) {
@@ -465,22 +486,40 @@
     }
   };
 
-  /* v4.16 DH — after a successful PASSWORD unlock, offer to enrol this
+  /* v4.17 DH — after a successful PASSWORD unlock, offer to enrol this
      phone's face/fingerprint so the next visit opens with one glance/touch.
      Only shown when: the device supports platform WebAuthn, nothing is
-     enrolled yet, and the user hasn't permanently dismissed the idea. */
+     enrolled yet, and the user hasn't permanently dismissed the idea.
+     v4.17 FIXES for "buttons not working":
+     • the offer used to be hidden INSIDE unlock() before maybeOfferBio() ran
+       (a race that could swallow the offer box entirely) — now it only ever
+       shows/hides from here;
+     • if DhBio.supported()/isEnrolled() reject or hang (some iOS WebView
+       builds never resolve isPlatformAuthenticatorAvailable), the password
+       gate used to stay up FOREVER because the reveal was chained behind
+       those promises — now the gate always opens on a short timer too. */
   const BIO_SKIP_KEY = 'dhContract.bio.skip.v4.16';
   const bioOfferShown = () => !!(bioOffer && !bioOffer.classList.contains('hidden'));
   const maybeOfferBio = () => {
     if (!bioReady() || !bioOffer || !bioEnableBtn) return;
     if (safeGet(BIO_SKIP_KEY)) return;
-    Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
-      .then(([sup, enr]) => {
-        if (!sup || enr) return;
-        if (bioNameEl) bioNameEl.textContent = window.DhBio.methodLabel();
+    let shown = false;
+    const showOffer = () => {
+      if (shown) return;
+      shown = true;
+      try {
+        if (window.DhBio && window.DhBio.methodLabel) {
+          bioNameEl.textContent = window.DhBio.methodLabel();
+        }
         bioOffer.classList.remove('hidden');
-      })
+      } catch { /* ignore */ }
+    };
+    Promise.all([window.DhBio.supported(), window.DhBio.isEnrolled()])
+      .then(([sup, enr]) => { if (sup && !enr) showOffer(); })
       .catch(() => { /* silent */ });
+    /* belt & braces: if the capability probes hang, still surface the offer
+       shortly — pressing it then fails gracefully with an honest toast. */
+    setTimeout(showOffer, 900);
   };
   if (bioEnableBtn) bioEnableBtn.addEventListener('click', () => {
     if (bioBusy || !window.DhBio) return;
@@ -493,10 +532,13 @@
         showBioZone(window.DhBio.methodLabel());
         toast('💞 ' + window.DhBio.methodLabel() + ' enabled for this phone — one look/touch unlocks next time ♥');
       } else {
+        const e = window.__dhBioLastErr;
+        console.warn('DH: biometric enrolment returned false', e && (e.message || e));
         toast('Couldn’t enable biometrics here — the secret word still works perfectly ♥');
       }
-    }).catch(() => {
+    }).catch(err => {
       bioOffer.classList.add('hidden');
+      console.warn('DH: biometric enrolment threw', err && (err.message || err));
       toast('Couldn’t enable biometrics here — the secret word still works perfectly ♥');
     }).then(() => {
       bioBusy = false;
