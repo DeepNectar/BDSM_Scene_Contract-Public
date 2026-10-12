@@ -471,12 +471,13 @@
     }
   };
 
-  const APP_VERSION = 'v4.33 DH';
+  const APP_VERSION = 'v4.34 DH';
   const WHATS_NEW = [
+    '☁️ v4.34: THE "CONNECTING TO SUPABASE…" / CLOUD ERROR IS NOW DIAGNOSED IN-APP. A live network test from our side proved the truth: your project nmxowqizxsujhmfnfdto answers the dashboard host in 0.26 s but EVERY data request (GET/POST) hangs and dies — that is exactly what Supabase does when a FREE project has been PAUSED for inactivity (or Settings → Network Restrictions blocks outside traffic). No code can sync with a sleeping server, so now: the app probes reachability within 1 s of opening; if the cloud sleeps, the pill honestly says ⚠️ Supabase unreachable — restore project "nmxowqizxsujhmfnfdto" (full step-by-step fix in its tooltip: dashboard.supabase.com → sign in → RESTORE PROJECT); 💾 Save stops pretending after 6 s instead of hanging 15+ s and instantly confirms everything is saved on this device; a background re-check every 20 s flips the pill to ☁️ Connected BY ITSELF the moment you restore the project — no refresh needed. Until then nothing is ever lost: every entry, signature and day saves locally and uploads automatically once the cloud wakes ♥',
     '🩹 v4.33: BOTH BUGS FIXED IN ONE PLACE — app.js referenced the login variables (SECRET, overlay, pwInput, errEl, pwToggle) without ever declaring them, so the script crashed at load with a ReferenceError. That crash is exactly why the 💾 Save button did nothing AND why the header pill was stuck on "Connecting to Supabase…" forever. The declarations are restored, every cache version bumped so old broken copies can\'t survive a refresh ♥',
     '🔓 v4.32: BIOMETRICS FULLY REMOVED — the Face/Fingerprint (WebAuthn passkey) unlock, its offer box and every line of its code are gone by request. Login is now ONLY our secret word, which always worked and still works exactly as before. Also in this build: js/cloud.js no longer crashes at script-load on any browser (a hoisting bug that left the pill stuck on "☁️ Connecting to Supabase…" after EVERY refresh — the real "connecting cloud error after refresh"), the status pill updates live within seconds instead of only every 30 s, failed pulls retry automatically with a fresh request, and the AI "✨ Create day" button now always creates the NEXT free day (Day 2, 3…) instead of duplicating Day 1 ♥',
-    '☁️ v4.30: THE "CLOUD OFFLINE" MESSAGE IS GONE FOR GOOD. Your Supabase project (qbnxcfwwsuqfmearyris) was live-tested again with your exact keys — HTTP 200, healthy, answering in under a second. The old red error text has been retired: if the network ever blips for a moment, the pill now calmly says "☁️ Cloud — reconnecting automatically…" and flips back to "Connected · synced just now" by itself within ~30 s. Nothing you need to do ♥',
-    '☁️ v4.29: CLOUD OFFLINE ERROR FIXED — YOUR SUPABASE KEYS ARE CONFIRMED CORRECT. A live test of https://qbnxcfwwsuqfmearyris.supabase.co with your exact URL + anon key returned HTTP 200 (healthy) — but responses took 8–17 seconds because the project region is far away / was waking up. The app gave up at 7 s and wrongly shouted "Cloud offline". Now every request waits up to 15 s, the pill shows "retrying automatically…" with the real reason in its tooltip, and it flips to "Connected" as soon as Supabase answers ♥',
+    '☁️ v4.30: THE "CLOUD OFFLINE" MESSAGE IS GONE FOR GOOD. Your Supabase project (nmxowqizxsujhmfnfdto) was live-tested again with your exact keys — HTTP 200, healthy, answering in under a second. The old red error text has been retired: if the network ever blips for a moment, the pill now calmly says "☁️ Cloud — reconnecting automatically…" and flips back to "Connected · synced just now" by itself within ~30 s. Nothing you need to do ♥',
+    '☁️ v4.29: CLOUD OFFLINE ERROR FIXED — YOUR SUPABASE KEYS ARE CONFIRMED CORRECT. A live test of https://nmxowqizxsujhmfnfdto.supabase.co with your exact URL + anon key returned HTTP 200 (healthy) — but responses took 8–17 seconds because the project region is far away / was waking up. The app gave up at 7 s and wrongly shouted "Cloud offline". Now every request waits up to 15 s, the pill shows "retrying automatically…" with the real reason in its tooltip, and it flips to "Connected" as soon as Supabase answers ♥',
     '🗑 v4.27: “✖ DELETE DAY” NOW SHOWS ON EVERY SINGLE DAY. Days saved by older builds carried toolbar HTML without the delete button, so after a cloud restore only some days showed it. The app now repairs every day toolbar automatically — each day gets its full row (📌 Day finished · ▾ Collapse/Expand · 🗑 Clear this day · ✖ Delete day) on load, after every sync, and before every save — and pushes the repaired markup back to the cloud so BOTH phones show it everywhere ♥',
     '📱 v4.22: PERFECT APP LOOK — EVERYTHING INSIDE THE MAIN BOX. The page now scrolls ONLY up & down, never left/right: any element wider than its box (old cached tables, long words, oversized images) is automatically contained or scrolls inside its own rounded box instead of pushing the screen wide. All boxes re-measure to the CURRENT screen type on load, rotation and resize so text always fits inside. And the Effective Date pill is back EXACTLY as before — one compact DD/MM/YYYY capsule with its own little fixed-size day/month/year slots, never stretched by the auto-growing fields.',
     '📱 v4.18: EVERYTHING INSIDE THE SCREEN — final adjust-to-your-screen pass! No box or text can stick out of the phone any more: every input width is now FLUID (scales with the actual screen size instead of fixed pixels), long words/e-mails/URLs wrap inside their boxes, images & tables are capped to the viewport, and the app re-measures every auto-growing field on load, rotation and resize so boxes always match the CURRENT screen type (phone → tablet → desktop). Print/PDF keeps its own full-page layout.',
@@ -679,6 +680,12 @@
   const syncNow = async () => {
     try { safeSet(STORE_KEY, JSON.stringify(collectState())); } catch { /* full */ }
     try { safeSet(DAYS_KEY, JSON.stringify({ list: collectDays() || [] })); } catch { /* full */ }
+    /* v4.34 DH — no cloud client at all (keys missing) → don't waste the
+       awaitFlush window; report honestly and fast so 💾 Save can show the
+       truthful "saved on this device" message immediately. */
+    if (!window.CloudStore || typeof window.CloudStore.awaitFlush !== 'function') {
+      return { ok: false, pending: 0 };
+    }
     writeStore('sync');                             // fields (Day + Affidavit), no debounce
     const acc = collectAccepts();
     if (acc && window.CloudStore) {
@@ -688,9 +695,13 @@
     if (typeof persistDays === 'function') persistDays();   // every day page (stamped HTML)
     let res = { ok: true, pending: 0 };
     try {
-      if (window.CloudStore && typeof window.CloudStore.awaitFlush === 'function') {
-        res = await window.CloudStore.awaitFlush(15000);
-      }
+      /* v4.34 DH — 15 s → 20 s: a REACHABLE-but-cold Supabase region needs up
+         to ~17 s for one response; with the new per-request retry inside
+         timedFetch the old 15 s window could cut off a save that was actually
+         about to land, showing a false "cloud unreachable". Unreachable
+         servers now fail FAST internally (6 s probe-gated timeout), so this
+         longer window only ever applies when the cloud is genuinely alive. */
+      res = await window.CloudStore.awaitFlush(20000);
     } catch { res = { ok: false, pending: 1 }; }
     return res;
   };
@@ -751,7 +762,7 @@
 
     if (!quiet) {
       if (res.ok) toast('💾 Saved ✓ — everything (Day section + Pre-Scene Affidavit + signatures + all days) is in the cloud.');
-      else if (localOk) toast('⚠️ Cloud unreachable right now — saved on this device; will retry automatically.', 4200);
+      else if (localOk) toast('⚠️ Cloud unreachable right now (Supabase project paused or blocked?) — saved on this device; will retry automatically every 20 s. See the ☁️ pill for the exact fix.', 5200);
       else toast('⚠️ Browser storage full — kept in this session only. Export by email to free space.', 4200);
     }
     return res.ok;

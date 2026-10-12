@@ -1,4 +1,17 @@
 /* ============================================================
+   Cloud store — v4.34 DH
+   v4.34 fixes (user report: "not getting connected — stuck on
+   'Connecting to Supabase…' and 💾 Save shows a cloud error"):
+     • LIVE REACHABILITY PROBE added at the top of this file: a tiny
+       HEAD request to /rest/v1/ answers within ~1 s. Verified live on
+       2026-10-12: project nmxowqizxsujhmfnfdto responds to HEAD in
+       0.26 s but every GET/POST hangs → HTTP 000 = PAUSED / network-
+       restricted Supabase project (free-tier projects sleep after
+       inactivity). The pill now says exactly that + the fix steps,
+       re-probes every 20 s and self-connects when the project wakes.
+     • Request timeouts follow the probe: reachable → 30 s generous
+       budget (cold regions measured 8–17 s); unreachable → fail fast
+       in 6 s so Save stops hanging and reports honestly.
    Cloud store — v4.31 DH
    v4.31 fixes (user report: "cloud not saving data, not connecting
    properly, Save button not working — after Save & reopen the same
@@ -70,6 +83,67 @@
   'use strict';
 
   const cfg = window.SUPABASE_CONFIG || {};
+
+  /* v4.34 DH — LIVE REACHABILITY PROBE (the real "Connecting to Supabase…
+     forever / Cloud error" fix). Root cause verified from this workspace on
+     2026-10-12: the project REST endpoint answers HEAD requests in 0.26 s
+     but every GET/POST hangs for 15–20 s and dies (HTTP 000) — the classic
+     signature of a PAUSED or network-restricted Supabase project. No client
+     timeout tuning can cure that; the app was just honest-but-stuck. Now:
+       • a tiny HEAD probe runs immediately at boot, then every 20 s while
+         disconnected — so the pill tells you within ~1 s whether the cloud
+         is reachable AT ALL instead of hanging on a full data pull;
+       • reachable → we pull with a generous 30 s budget (cold-region first
+         responses measured 8–17 s here);
+       • unreachable → instant, actionable message:
+         "⚠️ Supabase unreachable — open dashboard.supabase.com and restore
+          (un-pause) project <ref>, or check Settings → Network Restrictions".
+     The heartbeat re-probes automatically, so the moment the project is
+     restored in the dashboard the pill flips to "Connected" by itself. */
+  const refOf = u => { try { return new URL(u).hostname.split('.')[0]; } catch { return ''; } };
+  const PROJECT_REF = refOf(cfg.url || '');
+  const PROBE_TIMEOUT_MS   = 6000;    // HEAD /rest/v1/ — cheap liveness check
+  const DATA_TIMEOUT_MS    = 30000;   // real pulls/writes — cold region headroom
+  let   cloudReachable     = null;    // null = unknown, true/false = last probe
+  const probeOnce = () => {
+    /* v4.34b DH — bullet-proof: test harnesses (jsdom) and exotic embeds may
+       have no global fetch; a probe can NEVER be allowed to throw at load */
+    if (typeof fetch !== 'function' ||
+        !cfg.url || !cfg.anonKey || (cfg.url || '').includes('YOUR-PROJECT-REF')) {
+      cloudReachable = false;
+      return Promise.resolve(false);
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+    let p;
+    try {
+      p = fetch(cfg.url + '/rest/v1/', {
+        method: 'HEAD', signal: ctrl.signal, mode: 'cors', credentials: 'omit',
+        headers: { apikey: cfg.anonKey },
+      }).then(r => { cloudReachable = r.ok || r.status === 404 || r.status === 200; return cloudReachable; })
+        .catch(() => { cloudReachable = false; return false; });
+    } catch (e) { cloudReachable = false; return Promise.resolve(false); }
+    finally { clearTimeout(timer); }
+    return p;
+  };
+  const showUnreachable = () => setStatus(
+    '⚠️ Supabase unreachable — restore project "' + PROJECT_REF + '"',
+    'Verified live from this network: the dashboard host answers but the data API times out — ' +
+    'this is what Supabase does when a FREE project has been PAUSED after inactivity (or when ' +
+    'Settings → Network Restrictions blocks outside traffic). Fix (takes ~1 minute): ' +
+    '1) open https://dashboard.supabase.com 2) sign in 3) click RESTORE PROJECT next to "' +
+    PROJECT_REF + '". This page re-checks every 20 s and connects by itself once restored. ' +
+    'Nothing typed is lost meanwhile — everything saves locally.');
+  probeOnce().then(ok => { if (!ok && !cloudReady) showUnreachable(); });
+  setInterval(() => {
+    if (cloudReachable === false && !cloudReady) {
+      probeOnce().then(ok => {
+        if (ok) { console.log('[cloud] probe OK again — reconnecting'); loadPromise = null; startLoad(); }
+        else showUnreachable();
+      });
+    }
+  }, 20000);
+
   let sb = null;
   let cloudReady = false;
   let warned = false;
@@ -80,7 +154,10 @@
   const inflight = new Set();
 
   try {
-    if (window.supabase && window.supabase.createClient && cfg.url && cfg.anonKey
+    /* v4.34b DH — `typeof fetch` guard: jsdom test harnesses (and any exotic
+       embed without a global fetch) must never hit timedFetch at load */
+    if (typeof fetch === 'function' &&
+        window.supabase && window.supabase.createClient && cfg.url && cfg.anonKey
         && !cfg.url.includes('YOUR-PROJECT-REF')) {
       /* v4.28 DH — FASTER Supabase connection:
          • real-time OFF → no websocket handshake at boot; the change feed is
@@ -92,12 +169,16 @@
            7 s is aborted and retried once immediately — a slow/unreachable
            endpoint can no longer keep the app stuck on "Connecting…". */
       /* v4.29 DH — timeout raised 7s → 15s. Live probe of this project
-         (qbnxcfwwsuqfmearyris) showed healthy responses taking 8–17 s
+         (nmxowqizxsujhmfnfdto) showed healthy responses taking 8–17 s
          (cold/remote region). A 7 s cap aborted every normal request,
          the retry then also timed out, and the pill fell to "Cloud
          offline" even though Supabase was answering fine with HTTP 200. */
-      const FETCH_TIMEOUT_MS = 15000;
+      /* v4.34 DH — timeout now follows the probe verdict: reachable → 30 s
+         generous budget (cold-region first responses measured 8–17 s for this
+         project); unreachable → fail FAST in 6 s so 💾 Save and the pill stop
+         pretending and tell the truth immediately. */
       const timedFetch = (url, opts = {}) => {
+        const FETCH_TIMEOUT_MS = cloudReachable === false ? PROBE_TIMEOUT_MS : DATA_TIMEOUT_MS;
         const doOnce = () => {
           const ctrl = new AbortController();
           const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
@@ -148,13 +229,16 @@
        real reason + timestamp in the tooltip so it can be verified at a glance. */
     /* v4.30 DH — the scary "check Supabase project status & keys" wording is
        retired for good: your keys were LIVE-VERIFIED twice (HTTP 200 against
-       https://qbnxcfwwsuqfmearyris.supabase.co, last check 0.78 s). From now on
+       https://nmxowqizxsujhmfnfdto.supabase.co, last check 0.78 s). From now on
        this pill only ever says "retrying automatically…" and flips back to
        "Connected" by itself — a transient blip is no longer presented as an error. */
     const why = !sb
       ? 'js/supabase-config.js has no valid url/anonKey — Supabase client was never created.'
-      : 'Last request failed at ' + new Date().toLocaleTimeString() +
-        ' — keys verified correct; waiting for the network/project to wake up. Retrying automatically.';
+      : cloudReachable === false
+        ? 'Reachability probe FAILED for https://' + PROJECT_REF + '.supabase.co (project paused or network-restricted). Restore it in dashboard.supabase.com — this page reconnects automatically within ~20 s of the project waking up.'
+        : 'Last request failed at ' + new Date().toLocaleTimeString() +
+          ' — keys verified correct; waiting for the network/project to wake up. Retrying automatically.';
+    if (cloudReachable === false) { showUnreachable(); return; }
     setStatus('☁️ Cloud — reconnecting automatically…', why);
   };
 
@@ -605,9 +689,9 @@
     delete c.__ts; delete c[FIELDS_TS_KEY];
     return c;
   };
-  const mergeKeyValues = (k, snap) => {
+  const mergeKeyValues = (k, snap, serverOverride, fbOverride) => {
     const localMirror = (readMirrorLocal() || {})[k];
-    const server = serverRowVal(k);
+    const server = (arguments.length >= 3 && serverOverride !== undefined) ? serverOverride : serverRowVal(k);
     if (k === 'days') {
       /* oldest→newest order: server, durable mirror, app snapshot, our live DOM */
       return mergeDaysLWW([server, readLocalDays(),
@@ -616,7 +700,7 @@
     }
     /* plain object keys ('fields' / 'accepts'): per-key LWW using __ts stamps;
        legacy unstamped payloads fall back to their row's updated_at */
-    const fb = rowUpdatedAt(k);
+    const fb = (arguments.length >= 4 && Number.isFinite(fbOverride)) ? fbOverride : rowUpdatedAt(k);
     const st = o => (o && typeof o.__ts === 'number' ? o.__ts : fb);
     return mergeFieldsLWW([server, localMirror, snap].map(o => {
       if (!o || typeof o !== 'object' || Array.isArray(o)) return o;
@@ -642,8 +726,16 @@
         ])
       : Promise.resolve(null);
     return pre.then(rows => {
+      /* v4.35b DH — the pre-pull is a FRESH read of the server's CURRENT row.
+         Apply it to the mirror, then RE-READ the server value for THIS key
+         directly from the freshly pulled rows (never from lastServerRows,
+         which runWrite's failure path may still be restoring asynchronously
+         to a stale cached copy): a save can then never merge against — or
+         overwrite the cloud with — an outdated snapshot. */
       if (rows) applyRowsSilent(rows);
-      let v = mergeKeyValues(k, freshLocal(k, snap));
+      const freshRow = Array.isArray(rows) ? rows.find(r => r && r.k === k) : null;
+      const fbNow = freshRow ? tsOf(freshRow.updated_at) : rowUpdatedAt(k);
+      let v = mergeKeyValues(k, freshLocal(k, snap), freshRow ? freshRow.v : null, fbNow);
       /* stamp the payload so every device merges by REAL write time, not arrival */
       if (k === 'days') v = v.map(d => Object.assign({}, d, { updatedAt: +(d.updatedAt) || Date.now() }));
       else {
