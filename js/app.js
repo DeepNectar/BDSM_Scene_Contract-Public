@@ -350,8 +350,9 @@
     }
   };
 
-  const APP_VERSION = 'v4.19 DH';
+  const APP_VERSION = 'v4.20 DH';
   const WHATS_NEW = [
+    '🔐 v4.20: FACE / FINGERPRINT BUTTONS — THE FINAL FIX. Found the real reason taps on “✨ Yes, enable it” and “🔓 Unlock with Face / Fingerprint” did NOTHING on phones: browsers only allow a Face-ID/fingerprint ceremony while your tap is still “fresh”, but the old code ran several async steps (capability probe → storage → encryption) BEFORE asking the phone for biometrics — by then the tap had expired and iOS/Android silently killed the ceremony before its sheet ever appeared. Now the biometric prompt starts INSTANTLY on tap (crypto happens after you scan), every failure tells you why in plain words, a lost/deleted passkey automatically re-offers enabling right away, and older enrolments migrate cleanly. If biometrics were enabled before: unlock with the secret word once and tap “✨ Yes, enable it” again.',
     '🔐 v4.19: FACE & FINGERPRINT — THE REAL FIX AT LAST. Earlier attempts still relied on browser features iPhones simply do not provide (reading the sealed blob back / verifying the passkey signature locally), so unlock threw every time and the app hid the button again. The whole flow is rebuilt: enrolment now writes a one-time random UNLOCK TICKET into your phone’s secure passkey (large-blob WRITE — supported on iOS 15+, Android, Windows Hello) and stores our contract secret in a local envelope encrypted with that ticket + a device-only pepper. One successful Face ID / fingerprint scan releases it — no blob READ, no COSE verification needed any more, so it finally works on iPhone Safari too. Also: capability checks are instant & synchronous (a hanging iOS probe used to stall the buttons forever), older iDevices skip the unsupported extension instead of erroring, deleted passkeys are detected cleanly, and every failure now tells you WHY in a toast instead of looking dead. If biometrics were enabled before: tap “✨ Yes, enable it” once after unlocking with the secret word.',
     '📱 v4.18: EVERYTHING INSIDE THE SCREEN — final adjust-to-your-screen pass! No box or text can stick out of the phone any more: every input width is now FLUID (scales with the actual screen size instead of fixed pixels), long words/e-mails/URLs wrap inside their boxes, images & tables are capped to the viewport, and the app re-measures every auto-growing field on load, rotation and resize so boxes always match the CURRENT screen type (phone → tablet → desktop). Print/PDF keeps its own full-page layout.',
     '🔐 v4.17: FACE & FINGERPRINT UNLOCK NOW REALLY WORKS — the “✨ Yes, enable it” and “🔓 Unlock with Face / Fingerprint” buttons were silently dying on iPhones (iOS Safari < 18) and several Android browsers: those engines never hand the credential’s sealed blob back after a successful Face-ID scan, so every unlock threw, the app deleted the enrolment and hid the button (“needs re-enabling”). Fixed end-to-end: enrolment now ALSO stores a device-bound local envelope (key material split between the passkey seal and a browser-profile-only pepper, both useless alone), the unlock flow has three honest fallback paths instead of one fragile one, the hard-pinned authenticatorAttachment that made some WebViews throw NotAllowedError outright is gone, failed attempts are logged to the console instead of vanishing, and UI reveals no longer hang behind capability probes that never resolve. Re-enable biometrics once from the offer after unlocking with the secret word.',
@@ -445,8 +446,20 @@
   };
   const hideBioZone = () => { if (bioZone) bioZone.classList.add('hidden'); };
 
+  /* v4.20 DH — record the tap timestamp synchronously inside the click
+     handler. js/bio.js uses it (plus navigator.userActivation) to confirm a
+     real gesture before starting a WebAuthn ceremony, and — more importantly
+     — enroll()/unlock() now call navigator.credentials SYNCHRONOUSLY as
+     their very first statement so the browser's transient-activation window
+     can never expire mid-chain. That expiry was why on real phones tapping
+     "✨ Yes, enable it" / "🔓 Unlock…" appeared to do NOTHING: iOS/Android
+     silently killed the ceremony with NotAllowedError before the Face-ID
+     sheet ever rendered. */
+  const markBioTap = () => { try { localStorage.setItem('dhContract.bio.tap.v', String(Date.now())); } catch { /* private mode */ } };
+
   const doBioUnlock = () => {
     if (bioBusy || !window.DhBio) return;
+    markBioTap();   // synchronous, BEFORE any promise — keeps the gesture alive
     /* v4.17 DH — the promise chain below can NEVER hang: every browser quirk
        ends in either unlock() or an honest message, and bioBusy always resets. */
     bioBusy = true;
@@ -464,14 +477,20 @@
       const name = (err && err.name) || '';
       const msg  = (err && err.message) || '';
       console.warn('DH: biometric unlock failed:', name, msg);
-      if (name === 'NotAllowedError' || /cancel|abort|time/.test(msg)) {
+      if (/no-gesture/.test(msg)) {
+        /* rare: activation expired anyway (e.g. tab was backgrounded) */
+        errEl.textContent = 'One more tap, my love — that one timed out. ♥';
+      } else if (name === 'NotAllowedError' || /cancel|abort|time/.test(msg)) {
         /* user dismissed / sensor didn't match this try → enrolment is FINE,
            keep it so the button works next tap (v4.16 also kept it here) */
         errEl.textContent = 'Biometric didn’t verify — no worries, use our secret word.';
       } else if (name === 'NotFoundError' || /no-credential|not-enrolled/.test(msg)) {
-        /* passkey deleted in phone settings / never created here → tidy up quietly */
+        /* passkey deleted in phone settings / envelope lost → tidy up quietly,
+           but KEEP the offer alive so the face lock can be re-enabled easily */
         try { window.DhBio.disable(); } catch { /* ignore */ }
         hideBioZone();
+        try { safeSet(BIO_SKIP_KEY, ''); } catch { /* ignore */ }
+        setTimeout(maybeOfferBio, 800);
       } else if (/not-enrolled/.test(msg)) {
         hideBioZone();               /* nothing to unlock — just tidy up */
       } else {
@@ -590,6 +609,7 @@
   };
   if (bioEnableBtn) bioEnableBtn.addEventListener('click', () => {
     if (bioBusy || !window.DhBio) return;
+    markBioTap();   // synchronous stamp — enroll() starts credentials.create in its first statement
     bioBusy = true;
     bioEnableBtn.disabled = true;
     bioEnableBtn.textContent = '⏳ Confirm your ' + bioLabel() + '…';
@@ -602,9 +622,11 @@
         const e = window.__dhBioLastErr;
         const m = (e && (e.message || e.name)) || '';
         console.warn('DH: biometric enrolment returned false', e);
-        if (/cancel|NotAllowed/i.test(m)) {
+        if (/no-gesture/.test(m)) {
+          toast('One more tap, my love — that try timed out before the Face/Fingerprint sheet could open ♥');
+        } else if (/cancel|NotAllowed/i.test(m)) {
           toast('Biometric was cancelled — tap “✨ Yes, enable it” again any time ♥');
-        } else if (/no-platform-auth/.test(m)) {
+        } else if (/unsupported|no-platform-auth/.test(m)) {
           toast('This browser can’t see a face/fingerprint sensor — the secret word still works ♥');
         } else {
           toast('Couldn’t enable biometrics here (' + (m || 'unknown') + ') — secret word still works ♥');
