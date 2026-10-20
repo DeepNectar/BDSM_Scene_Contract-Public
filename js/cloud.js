@@ -185,8 +185,16 @@
   try {
     /* v4.34b DH — `typeof fetch` guard: jsdom test harnesses (and any exotic
        embed without a global fetch) must never hit timedFetch at load */
-    if (typeof fetch === 'function' &&
-        window.supabase && window.supabase.createClient && cfg.url && cfg.anonKey
+    /* v4.38 DH — THE FINAL "NOTHING SYNCS" ROOT CAUSE: the reachability probe
+       below used Node's global fetch, saw the real endpoint answer, set
+       cloudReachable=false on a transient blip (or before any successful pull),
+       and this `typeof fetch === 'function'` guard then refused to create the
+       Supabase client AT ALL for the whole session — every save silently went
+       local-only ("saved on this device"), so no day or detail ever reached the
+       cloud and no other device could show anything. The client is now ALWAYS
+       created when keys are present; the probe only tunes timeouts & messaging,
+       it can never disable syncing again. */
+    if (window.supabase && window.supabase.createClient && cfg.url && cfg.anonKey
         && !cfg.url.includes('YOUR-PROJECT-REF')) {
       /* v4.28 DH — FASTER Supabase connection:
          • real-time OFF → no websocket handshake at boot; the change feed is
@@ -206,12 +214,13 @@
          generous budget (cold-region first responses measured 8–17 s for this
          project); unreachable → fail FAST in 6 s so 💾 Save and the pill stop
          pretending and tell the truth immediately. */
+      const baseFetch = (...a) => (typeof fetch === 'function') ? fetch(...a) : Promise.reject(new Error('no fetch'));
       const timedFetch = (url, opts = {}) => {
         const FETCH_TIMEOUT_MS = cloudReachable === false ? PROBE_TIMEOUT_MS : DATA_TIMEOUT_MS;
         const doOnce = () => {
           const ctrl = new AbortController();
           const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-          return fetch(url, Object.assign({}, opts, { signal: ctrl.signal }))
+          return baseFetch(url, Object.assign({}, opts, { signal: ctrl.signal }))
             .finally(() => clearTimeout(timer));
         };
         return doOnce().catch(err => {
@@ -343,7 +352,9 @@
           p_fields: (m && m.fields  && Object.keys(m.fields).length)                ? m.fields : (readFieldsEarly() || null),
           p_accepts:(m && m.accepts && Object.keys(m.accepts).length)               ? m.accepts : null,
           p_writer: safeGet(LS_WRITER_EARLY) || 'rescue-v437',
-        }).then(({ data, error }) => {
+        }).then(res => {
+          const error = res && res.error;
+          const data  = res && res.data;
           try {
             safeSet(TOMB_RESCUE_KEY, JSON.stringify({
               ts: Date.now(), done: true,
@@ -806,9 +817,16 @@
     delete c.__ts; delete c[FIELDS_TS_KEY];
     return c;
   };
-  const mergeKeyValues = (k, snap, serverOverride, fbOverride) => {
+  /* v4.38b DH — CRASH FIX: this arrow function used `arguments`, which does NOT
+     exist inside arrow functions. As soon as the Supabase client was actually
+     created (v4.38 removed the probe gate that had been hiding it), EVERY
+     merged write threw "ReferenceError: arguments is not defined" → 💾 Save
+     died mid-flight and NOTHING reached the cloud on any device. Explicit
+     sentinel parameters replace every `arguments.length` check now. */
+  const NO_OVERRIDE = Symbol('no-override');
+  const mergeKeyValues = (k, snap, serverOverride = NO_OVERRIDE, fbOverride = NO_OVERRIDE) => {
     const localMirror = (readMirrorLocal() || {})[k];
-    const server = (arguments.length >= 3 && serverOverride !== undefined) ? serverOverride : serverRowVal(k);
+    const server = (serverOverride !== NO_OVERRIDE && serverOverride !== undefined) ? serverOverride : serverRowVal(k);
     if (k === 'days') {
       /* oldest→newest order: server, durable mirror, app snapshot, our live DOM */
       return mergeDaysLWW([server, readLocalDays(),
@@ -817,7 +835,7 @@
     }
     /* plain object keys ('fields' / 'accepts'): per-key LWW using __ts stamps;
        legacy unstamped payloads fall back to their row's updated_at */
-    const fb = (arguments.length >= 4 && Number.isFinite(fbOverride)) ? fbOverride : rowUpdatedAt(k);
+    const fb = (fbOverride !== NO_OVERRIDE && Number.isFinite(fbOverride)) ? fbOverride : rowUpdatedAt(k);
     const st = o => (o && typeof o.__ts === 'number' ? o.__ts : fb);
     return mergeFieldsLWW([server, localMirror, snap].map(o => {
       if (!o || typeof o !== 'object' || Array.isArray(o)) return o;

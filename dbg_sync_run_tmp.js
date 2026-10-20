@@ -58,6 +58,7 @@ function makeServerClient() {
       };
       return ch;
     },
+    rpc(name, args) { return Promise.resolve({ data: { rescued: false, reason: 'test harness' }, error: null }); },
     realtime: {},
   };
   deviceClients.push(client);
@@ -66,7 +67,7 @@ function makeServerClient() {
 
 /* ---------- one device = fresh jsdom + fresh localStorage ---------- */
 function bootDevice(name) {
-  const dom = new JSDOM(htmlSrc, { runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM(htmlSrc, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://contract.example.app/' });
   const w = dom.window;
   w.confirm = () => true;
   w.alert = () => {};
