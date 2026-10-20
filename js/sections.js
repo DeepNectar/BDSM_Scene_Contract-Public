@@ -255,6 +255,15 @@
     });
     document.addEventListener('input',  schedule, true);
     document.addEventListener('change', schedule, true);
+    /* v6.0 DH — push again whenever the cloud re-pulls (login, tab focus,
+       realtime change from the other device): after restoreDays() replaces
+       the day pages with the cloud copies, this device's readable tables
+       must be refreshed from the NEWEST merged state — otherwise phone B
+       shows synced days in the app but its structured rows stay stale. */
+    try {
+      if (window.CloudStore && typeof window.CloudStore.onChange === 'function')
+        window.CloudStore.onChange(() => setTimeout(dhkPushSections, 1500));
+    } catch { /* CloudStore not booted yet — timers below still cover it */ }
     /* first fill shortly after load (cloud pull may still be restoring) */
     setTimeout(dhkPushSections, 4000);
     setTimeout(dhkPushSections, 12000);
