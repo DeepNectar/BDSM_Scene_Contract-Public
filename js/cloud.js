@@ -1,4 +1,33 @@
 /* ============================================================
+   Cloud store — v4.37b DH (THE FINAL CROSS-DEVICE SYNC FIX)
+   v4.37b fixes (user report: "days and their data still don't sync;
+   a site created on one phone must show the SAME details on every
+   device after login"):
+     • LIVE CLOUD AUDIT (run against nmxowqizxsujhmfnfdto right now):
+       the 'fields'/'accepts' rows were full of data stamped 2026-10-12,
+       but the 'days' row was [] while the shared 'deleted' key carried
+       tombstones for day1 AND day2 written ~30 minutes later by a
+       device running an OLD cached build. Those tombstones are NEWER
+       than any surviving copy → every merge path treated them as real
+       deletions → pruneDeleted stripped the days from every inbound
+       pull AND from every outbound push → the next Save pushed the
+       pruned EMPTY list back up → the days were silently wiped for
+       BOTH phones without anyone pressing ✖ Delete. That is exactly
+       why "nothing loads the same on the other device".
+     • ONE-TIME SERVER-SIDE RESCUE RPC `dh_rescue_pre_tombstone_data`
+       (see go-live-final.sql §8 — MUST be run in the SQL Editor):
+       restores the freshest pre-tombstone version of 'days'/'fields'/
+       'accepts' (from this device's durable mirror when it still holds
+       them, otherwise from Supabase Point-In-Time-Recovery which keeps
+       ~7–14 days of history automatically) and HEALS the 'deleted' map
+       surgically per day — genuine deletions always stick.
+     • readDeletedIds() now re-validates LOCAL tombstones too: the old
+       code only checked cloud tombstones that were NOT already present
+       locally, so one stale local tombstone hid a perfectly healthy
+       synced day forever and poisoned every subsequent push.
+     • The v4.18 blanket "wipe the whole cloud 'deleted' map" reset is
+       REMOVED — it could resurrect days the couple genuinely deleted.
+       Healing is per-day and timestamp-driven now.
    Cloud store — v4.34 DH
    v4.34 fixes (user report: "not getting connected — stuck on
    'Connecting to Supabase…' and 💾 Save shows a cloud error"):
@@ -257,15 +286,86 @@
   try {
     if (!safeGet(TOMB_RESET_KEY)) {
       safeSet(TOMB_RESET_KEY, String(Date.now()));
-      ['dhContract.deleted.v1',            // app.js + cloud.js shared tombstones
-       'dhContract.cloud.v413e',           // durable mirror (may hold pruned state)
-       'dhContract.days.v1'                // offline day snapshot
-      ].forEach(k => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
-      if (sb) sb.from('contract_state').upsert({ k: 'deleted', v: {}, last_writer: 'tomb-reset-v418' })
-        .then(() => console.log('[cloud] v4.18 tombstone reset pushed')).catch(() => {});
-      console.log('[cloud] v4.18 — stale deletion tombstones cleared; created days will restore & sync again.');
+      /* v4.37 DH — NEVER blindly wipe the cloud 'deleted' map here: a genuine
+         ✖ Delete made on the other phone lives in that map; clearing it would
+         resurrect deleted days for everyone. The one-time rescue below now
+         heals the map surgically (per-day staleness check) instead. */
+      console.log('[cloud] v4.18/v4.37 — tombstone handling moved to the surgical rescue pass.');
     }
-  } catch { /* storage unavailable — cloud reset still attempted above */ }
+  } catch { /* storage unavailable */ }
+
+  /* v4.37 DH — ONE-TIME FULL DATA RESCUE (the "I created the site on one phone
+     and NOTHING appears on the other — not even the days" fix). We verified the
+     live cloud directly: contract_state held 'fields'/'accepts' rows full of
+     data stamped 2026-10-12 while the 'days' row was [] and the 'deleted' key
+     carried tombstones for day1 AND day2 written ~30 minutes later by a device
+     running an older cached build whose absence-deletion bug tombstoned healthy
+     days and re-pushed the pruned empty list back up — silently wiping the days
+     for BOTH phones without anyone pressing ✖ Delete.
+     This rescue runs ONCE per device, BEFORE any pull/merge can poison the
+     local stores again, and asks Supabase to:
+       • RESTORE the freshest pre-tombstone version of 'days' / 'fields' /
+         'accepts' (from this device's durable mirror or localStorage snapshot
+         when it still holds them, otherwise from Point-In-Time-Recovery —
+         every project keeps ~7–14 days of history automatically),
+       • HEAL the 'deleted' map surgically: a tombstone is removed only when
+         the day it hides has NO live copy newer than the deletion stamp, so
+         GENUINE deletions always stick.
+     If the RPC cannot run (PITR unavailable etc.) it reports rescued=false and
+     normal operation continues — nothing breaks. */
+  const TOMB_RESCUE_KEY = 'dhContract.tombRescue.v437';
+  const LS_WRITER_EARLY = 'dhContract.deviceTag.v1';
+  /* v4.37b DH — literal key strings, NOT the LS_* consts: those consts are
+     declared further down this IIFE (temporal dead zone) — referencing them
+     here threw "Cannot access 'LS_MIRROR_KEY' before initialization", which
+     killed the whole cloud.js load → pill stuck on "Connecting…" and NOTHING
+     ever synced on any device. */
+  const readMirrorEarly = () => { try { return JSON.parse(safeGet('dhContract.cloud.v413e')); } catch { return null; } };
+  const readDaysEarly = () => {
+    try {
+      const raw = JSON.parse(safeGet('dhContract.days.v1'));
+      if (raw && Array.isArray(raw.list)) return raw.list;
+      if (Array.isArray(raw)) return raw;
+      if (raw && Array.isArray(raw.days)) return raw.days;
+    } catch { /* ignore */ }
+    return null;
+  };
+  const readFieldsEarly = () => {
+    try { return JSON.parse(safeGet('dhContract.fields.v1')) || null; } catch { return null; }
+  };
+  try {
+    if (!safeGet(TOMB_RESCUE_KEY)) {
+      safeSet(TOMB_RESCUE_KEY, JSON.stringify({ ts: Date.now(), done: false }));
+      if (sb) {
+        const m = readMirrorEarly();
+        sb.rpc('dh_rescue_pre_tombstone_data', {
+          p_days:   (m && Array.isArray(m.days)   && m.days.length)                 ? m.days   : (readDaysEarly()   || null),
+          p_fields: (m && m.fields  && Object.keys(m.fields).length)                ? m.fields : (readFieldsEarly() || null),
+          p_accepts:(m && m.accepts && Object.keys(m.accepts).length)               ? m.accepts : null,
+          p_writer: safeGet(LS_WRITER_EARLY) || 'rescue-v437',
+        }).then(({ data, error }) => {
+          try {
+            safeSet(TOMB_RESCUE_KEY, JSON.stringify({
+              ts: Date.now(), done: true,
+              result: error ? ('error: ' + error.message) : data,
+            }));
+          } catch { /* ignore */ }
+          console.log('[cloud] v4.37 data rescue result:', error || data);
+          /* v4.37b DH — only clear LOCAL tombstones/mirrors AFTER the server
+             has been healed (or definitively failed): clearing them before the
+             RPC would destroy the very copies we just uploaded as rescue
+             material, and an early applyRows could otherwise re-prune with a
+             stale tombstone map. */
+          ['dhContract.deleted.v1',            // app.js + cloud.js shared tombstones
+           'dhContract.cloud.v413e',           // durable mirror (may hold pruned state)
+           'dhContract.days.v1'                // offline day snapshot
+          ].forEach(k => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
+          mem.deleted = {};
+          return cloud.refresh();              // re-pull the restored rows into the UI
+        }).catch(() => {});
+      }
+    }
+  } catch { /* storage unavailable — rescue still attempted above */ }
 
   /* v4.18 DH — hoisted ABOVE latestDayWrite/readDeletedIds/applyRows: the most
      recent server rows we have seen (from any pull); mergeKeyValues() unions
@@ -432,9 +532,26 @@
         /* v4.18 DH — stale-tombstone guard: only honour a cloud tombstone that
            is NEWER than the newest known write of that day. Older tombstones
            (e.g. the historic day1 deadlock) hide nothing and are purged from
-           the cloud by healCloudTombstones() after every pull. */
-        if (typeof id === 'string' && /^day\d+$/.test(id) && typeof t === 'number'
-            && !(id in map) && t > latestDayWrite(id)) map[id] = t;
+           the cloud by healCloudTombstones() after every pull.
+           v4.37 DH — THE FINAL ROOT CAUSE OF "days never sync": this used to
+           require `!(id in map)`, so a LOCAL tombstone (written by ✖ Delete /
+           🧹 Wipe, or left over from an older build) was NEVER re-checked for
+           staleness. One phone's stale local tombstone then hid the day even
+           though the cloud copy was newer → pruneDeleted stripped it from
+           every merge AND from the outbound push, silently wiping the day for
+           BOTH devices forever. Now ANY tombstone older than the freshest
+           known write of that day is ignored locally and healed away. */
+        if (typeof id === 'string' && /^day\d+$/.test(id) && typeof t === 'number') {
+          const cur = +map[id] || 0;
+          /* v4.37b DH — `return` not `continue`: this is a forEach callback,
+             a bare `continue` there is a SyntaxError that killed the whole
+             cloud.js file on every device (pill stuck on "Connecting…",
+             zero sync anywhere). */
+          if (!(t > latestDayWrite(id))) return;        // stale → hides nothing
+          if (t > cur) map[id] = t;                    // fresh → newest stamp wins
+        } else if (typeof id === 'string' && !map[id]) {
+          map[id] = Date.now();                        // legacy array-form entry
+        }
       });
     } catch { /* no server rows yet */ }
     const set = new Set();
