@@ -1772,11 +1772,16 @@
 
   /* ---------- add a brand-new BLANK day (manual creation) ---------- */
   const addBlankDay = () => {
-    /* v4.31 DH — seed Day 1 first (same rule as the AI "Create day" path):
-       a brand-new contract ships with ZERO day pages, so nextDayNumber()
-       would otherwise hand out #1 to a blank/AI-created day and the founding
-       Day 1 could never be created again without an id collision. */
-    if (!dayPages().length) { ensureStaticDay1(); }
+    /* v4.36 DH — THE ACTUAL CRASH THAT KILLED ALL SYNC: this line called
+       ensureStaticDay1(), a function that DOES NOT EXIST anywhere in the code
+       since v4.14 retired the hardcoded founding pages. Every press of
+       ➕ Add blank day threw ReferenceError BEFORE any page was created or
+       saved — so no day ever reached Supabase and the other phone stayed
+       empty forever ("days not syncing"). The v4.14 design is authoritative:
+       index.html ships with ZERO day pages and every day comes from the cloud
+       list or from ➕/✨ creation; nextDayNumber() correctly hands out #1 for
+       the very first day on a fresh contract. Guarded + removed for good. */
+    if (typeof ensureStaticDay1 === 'function') { try { ensureStaticDay1(); } catch { /* ignore */ } }
     const N = nextDayNumber();
     /* v4.8 DH — if this exact day id was deleted before (tombstoned), the user
        is deliberately creating a NEW day with that number → lift the tombstone
